@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { AudioEngine, Wave } from "@/lib/audio/AudioEngine";
 import { Visualizer } from "@/components/Visualizer";
 import Knob from "@/components/Knob";
+import WaveEditor from "@/components/WaveEditor";
 
 export default function SynthLab() {
     const engine = useMemo(() => new AudioEngine(), []);
@@ -23,6 +24,7 @@ export default function SynthLab() {
     const [decay, setDecay] = useState(0.1);
     const [sustain, setSustain] = useState(0.8);
     const [release, setRelease] = useState(0.2);
+    const [customShape, setCustomShape] = useState(() => makeSine(256));
 
     // recording
     const [recActive, setRecActive] = useState(false);
@@ -57,6 +59,11 @@ export default function SynthLab() {
     useEffect(() => {
         engine.setADSR(attack, decay, sustain, release);
     }, [attack, decay, sustain, release, engine]);
+
+    useEffect(() => {
+        // keep custom waveform in sync
+        engine.setCustomWaveShape(customShape);
+    }, [customShape, engine]);
 
     const toggleTone = async () => {
         await engine.resume();
@@ -116,7 +123,7 @@ export default function SynthLab() {
             {/* Waveform select */}
             <div className="flex items-center gap-2 flex-wrap">
                 <span className="text-sm opacity-80">Wave:</span>
-                {["sine", "square", "sawtooth", "triangle"].map((w) => (
+                {["sine", "square", "sawtooth", "triangle", "custom"].map((w) => (
                     <button
                         key={w}
                         onClick={() => setWave(w as Wave)}
@@ -232,10 +239,19 @@ export default function SynthLab() {
                 {!!recInfo && <span className="text-xs opacity-70">Mode: {recInfo}</span>}
             </div>
 
+            {/* Custom Waveform editor */}
+            {wave === "custom" && <WaveEditor value={customShape} onChange={setCustomShape} height={180} />}
+
             <p className="text-xs opacity-60">
                 Tip: tweak knobs while recording to capture changes. WAV records raw PCM in-browser. MP3 depends on
                 browser support and may fall back to WebM/Opus.
             </p>
         </main>
     );
+}
+
+function makeSine(N: number) {
+    const out = new Float32Array(N);
+    for (let i = 0; i < N; i++) out[i] = Math.sin((i / N) * 2 * Math.PI);
+    return out;
 }

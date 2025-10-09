@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 // src/lib/audio/AudioEngine.ts
-export type Wave = "sine" | "square" | "sawtooth" | "triangle";
+export type Wave = "sine" | "square" | "sawtooth" | "triangle" | "custom";
 
 export class AudioEngine {
     ctx?: AudioContext;
@@ -12,6 +12,8 @@ export class AudioEngine {
     private voiceGain?: GainNode; // per-voice amp (ADSR)
     private filter?: BiquadFilterNode;
     private shaper?: WaveShaperNode;
+    private customWave?: PeriodicWave;
+    private customSamples?: Float32Array;
 
     // Params
     private currentWave: Wave = "sine";
@@ -74,7 +76,13 @@ export class AudioEngine {
     // --- Synthesis controls ---
     setWave(type: Wave) {
         this.currentWave = type;
-        if (this.osc) this.osc.type = type;
+        if (this.osc) {
+            if (type === "custom") {
+                if (this.customWave) this.osc.setPeriodicWave(this.customWave);
+            } else {
+                this.osc.type = type;
+            }
+        }
     }
 
     setFrequency(freq: number) {
@@ -129,7 +137,11 @@ export class AudioEngine {
         const now = this.ctx!.currentTime;
 
         const osc = this.ctx!.createOscillator();
-        osc.type = type;
+        if (type === "custom" && this.customWave) {
+            osc.setPeriodicWave(this.customWave);
+        } else {
+            osc.type = type as OscillatorType;
+        }
         osc.frequency.setValueAtTime(freq, now);
         this.osc = osc;
 
@@ -306,5 +318,52 @@ export class AudioEngine {
 
     private writeString(view: DataView, offset: number, str: string) {
         for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+    }
+
+    // --- Custom waveform ---
+    setCustomWaveShape(samples: Float32Array) {
+        this.ensureContext();
+        if (!this.ctx) return;
+        // Clamp / normalize to [-1, 1]
+        const M = samples.length;
+        const s = new Float32Array(M);
+        for (let i = 0; i < M; i++) s[i] = Math.max(-1, Math.min(1, samples[i]));
+        this.customSamples = s;
+
+        const harmonics = Math.min(64, Math.floor(M / 2));
+        const real = new Float32Array(harmonics + 1);
+        const imag = new Float32Array(harmonics + 1);
+
+        // DFT to cosine (real) / sine (imag) coefficients
+        // WebAudio expects index 0 to be DC (real[0]) and imag[0] = 0.
+        // Scale with 2/M to match standard Fourier series for periodic signals.
+        let sum = 0;
+        for (let n = 0; n < M; n++) sum += s[n];
+        real[0] = (2 / M) * sum; // DC
+        imag[0] = 0;
+
+        for (let k = 1; k <= harmonics; k++) {
+            let ak = 0;
+            let bk = 0;
+            for (let n = 0; n < M; n++) {
+                const phase = (2 * Math.PI * k * n) / M;
+                const v = s[n];
+                ak += v * Math.cos(phase);
+                bk += v * Math.sin(phase);
+            }
+            real[k] = (2 / M) * ak;
+            imag[k] = (2 / M) * bk;
+        }
+
+        try {
+            // Let the system normalize magnitudes to avoid loudness jumps
+            this.customWave = this.ctx.createPeriodicWave(real, imag, { disableNormalization: false });
+        } catch {
+            this.customWave = this.ctx.createPeriodicWave(real, imag);
+        }
+
+        if (this.currentWave === "custom" && this.osc && this.customWave) {
+            this.osc.setPeriodicWave(this.customWave);
+        }
     }
 }
