@@ -16,7 +16,7 @@ export class AudioEngine {
     private customSamples?: Float32Array;
 
     // Polyphony
-    private voices: Map<string | number, { osc: OscillatorNode; gain: GainNode; startedAt: number } > = new Map();
+    private voices: Map<string | number, { osc: OscillatorNode; gain: GainNode; startedAt: number; freq?: number } > = new Map();
 
     // LFO
     private lfoOsc?: OscillatorNode;
@@ -25,7 +25,7 @@ export class AudioEngine {
     private lfoGainAmp?: GainNode;
     private lfoRate = 5; // Hz
     private vibratoCents = 0; // +/- cents
-    private filterLfoHz = 0; // +/- Hz
+    private filterLfoCents = 0; // +/- cents
     private tremoloDepth = 0; // 0..1 (applied around baseline)
 
     // Noise
@@ -48,17 +48,33 @@ export class AudioEngine {
     // Velocity sensitivity
     private ampVelSense = 1; // 0..1 (0 = velocity ignored, 1 = full)
     private filtVelSense = 0.5; // 0..1 scales filter env amount by velocity
+    private filtKeytrack = 0; // 0..1, 0=no keytrack, 1=1:1 per semitone
 
     // Polyphony
     private maxVoices = 16;
 
     // Recording
     private recMode?: "wav" | "mp3" | "webm";
-    private scriptProc?: ScriptProcessorNode; // wav capture
+    private scriptProc?: ScriptProcessorNode; // legacy wav capture (unused)
     private wavChunks: Float32Array[] = [];
     private mediaDest?: MediaStreamAudioDestinationNode; // for MediaRecorder
     private mediaRecorder?: MediaRecorder;
     private mediaChunks: BlobPart[] = [];
+    private recorderNode?: AudioWorkletNode;
+    private workletLoaded = false;
+
+    // FX
+    private delay?: DelayNode;
+    private delayFeedback?: GainNode;
+    private delaySend?: GainNode;
+    private delayTime = 0.25;
+    private delayFeedbackAmt = 0.25;
+    private delayMix = 0; // send level 0..1
+
+    private reverb?: ConvolverNode;
+    private reverbSend?: GainNode;
+    private reverbMix = 0; // send level 0..1
+    private reverbSize = 2.0; // seconds
 
     private ensureContext() {
         if (this.ctx) return;
@@ -78,7 +94,7 @@ export class AudioEngine {
         // Configure
         this.analyser.fftSize = 2048;
         this.master.gain.value = this.currentMaster;
-        this.mixGain.gain.value = 1; // voice envelopes modulate per-voice
+        this.mixGain.gain.value = 1 - this.tremoloDepth * 0.5; // baseline for tremolo
         this.filter.type = "lowpass";
         this.filter.frequency.value = this.filterCutoff;
         this.filter.Q.value = this.filterQ;
@@ -91,18 +107,33 @@ export class AudioEngine {
         this.master.connect(this.analyser);
         this.analyser.connect(this.ctx.destination);
 
-        // Noise branch
+        // Noise branch (lazy start)
         this.noiseGain = this.ctx.createGain();
         this.noiseGain.gain.value = this.noiseLevel;
         this.noiseGain.connect(this.mixGain);
-        const noiseBuf = this.ctx.createBuffer(1, this.ctx.sampleRate * 2, this.ctx.sampleRate);
-        const data = noiseBuf.getChannelData(0);
-        for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
-        this.noiseSrc = this.ctx.createBufferSource();
-        this.noiseSrc.buffer = noiseBuf;
-        this.noiseSrc.loop = true;
-        this.noiseSrc.connect(this.noiseGain);
-        this.noiseSrc.start();
+        if (this.noiseLevel > 0) this.startNoiseSrc();
+
+        // FX: Delay (send)
+        this.delay = this.ctx.createDelay(2.0);
+        this.delayFeedback = this.ctx.createGain();
+        this.delaySend = this.ctx.createGain();
+        this.delay.delayTime.value = this.delayTime;
+        this.delayFeedback.gain.value = this.delayFeedbackAmt;
+        this.delaySend.gain.value = this.delayMix;
+        this.shaper.connect(this.delaySend);
+        this.delaySend.connect(this.delay);
+        this.delay.connect(this.delayFeedback);
+        this.delayFeedback.connect(this.delay);
+        this.delay.connect(this.master);
+
+        // FX: Reverb (send)
+        this.reverb = this.ctx.createConvolver();
+        this.reverbSend = this.ctx.createGain();
+        this.reverbSend.gain.value = this.reverbMix;
+        this.reverb.buffer = this.makeImpulseResponse(this.ctx.sampleRate, this.reverbSize);
+        this.shaper.connect(this.reverbSend);
+        this.reverbSend.connect(this.reverb);
+        this.reverb.connect(this.master);
 
         // LFO setup
         this.lfoOsc = this.ctx.createOscillator();
@@ -112,13 +143,17 @@ export class AudioEngine {
         this.lfoOsc.type = "sine";
         this.lfoOsc.frequency.value = this.lfoRate;
         this.lfoGainPitch.gain.value = this.vibratoCents; // cents directly into detune
-        this.lfoGainFilter.gain.value = this.filterLfoHz; // Hz into frequency
-        this.lfoGainAmp.gain.value = this.tremoloDepth * 0.5; // centered around baseline
+        this.lfoGainFilter.gain.value = this.filterLfoCents; // cents into detune
+        this.lfoGainAmp.gain.value = this.tremoloDepth * 0.5; // amplitude around baseline
         this.lfoOsc.connect(this.lfoGainPitch);
         this.lfoOsc.connect(this.lfoGainFilter);
         this.lfoOsc.connect(this.lfoGainAmp);
-        // Connect filter LFO and amp LFO to targets
-        this.lfoGainFilter.connect(this.filter.frequency);
+        // Connect filter LFO and amp LFO to targets (prefer detune if available)
+        try {
+            (this.lfoGainFilter as GainNode).connect((this.filter as any).detune ?? this.filter.frequency);
+        } catch {
+            this.lfoGainFilter.connect(this.filter.frequency);
+        }
         this.lfoGainAmp.connect(this.mixGain.gain);
         this.lfoOsc.start();
 
@@ -200,6 +235,10 @@ export class AudioEngine {
         this.maxVoices = Math.max(1, Math.floor(n));
     }
 
+    setFilterKeytrack(amount01: number) {
+        this.filtKeytrack = Math.max(0, Math.min(1, amount01));
+    }
+
     private makeDistortionCurve(amount01: number) {
         const n = 44100;
         const curve = new Float32Array(n);
@@ -232,16 +271,41 @@ export class AudioEngine {
         }
     }
     setFilterLfoDepth(hz: number) {
-        this.filterLfoHz = Math.max(0, Math.min(5000, hz));
-        if (this.lfoGainFilter) this.lfoGainFilter.gain.value = this.filterLfoHz;
+        // Interpret as cents for musical mapping
+        const cents = Math.max(0, Math.min(4800, hz));
+        this.filterLfoCents = cents;
+        if (this.lfoGainFilter) this.lfoGainFilter.gain.value = cents;
     }
     setTremoloDepth(amount01: number) {
         this.tremoloDepth = Math.max(0, Math.min(1, amount01));
+        if (this.mixGain) this.mixGain.gain.value = 1 - this.tremoloDepth * 0.5;
         if (this.lfoGainAmp) this.lfoGainAmp.gain.value = this.tremoloDepth * 0.5;
     }
     setNoiseLevel(amount01: number) {
         this.noiseLevel = Math.max(0, Math.min(1, amount01));
         if (this.noiseGain) this.noiseGain.gain.value = this.noiseLevel;
+        if (!this.ctx) return;
+        if (this.noiseLevel > 0 && !this.noiseSrc) this.startNoiseSrc();
+        if (this.noiseLevel === 0 && this.noiseSrc) {
+            try { this.noiseSrc.stop(); } catch {}
+            try { this.noiseSrc.disconnect(); } catch {}
+            this.noiseSrc = undefined;
+        }
+    }
+
+    setDelay(time: number, feedback: number, mix: number) {
+        this.delayTime = Math.max(0, Math.min(2, time));
+        this.delayFeedbackAmt = Math.max(0, Math.min(0.95, feedback));
+        this.delayMix = Math.max(0, Math.min(1, mix));
+        if (this.delay) this.delay.delayTime.value = this.delayTime;
+        if (this.delayFeedback) this.delayFeedback.gain.value = this.delayFeedbackAmt;
+        if (this.delaySend) this.delaySend.gain.value = this.delayMix;
+    }
+    setReverb(sizeSec: number, mix: number) {
+        this.reverbSize = Math.max(0.1, Math.min(6, sizeSec));
+        this.reverbMix = Math.max(0, Math.min(1, mix));
+        if (this.reverbSend) this.reverbSend.gain.value = this.reverbMix;
+        if (this.reverb && this.ctx) this.reverb.buffer = this.makeImpulseResponse(this.ctx.sampleRate, this.reverbSize);
     }
 
     // --- Playback ---
@@ -251,8 +315,10 @@ export class AudioEngine {
         const now = this.ctx!.currentTime;
 
         const osc = this.ctx!.createOscillator();
-        if (type === "custom" && this.customWave) {
-            osc.setPeriodicWave(this.customWave);
+        if (type === "custom" && this.customSamples) {
+            const { real, imag } = this.buildPeriodicForFreq(this.customSamples, freq, this.ctx!.sampleRate);
+            try { osc.setPeriodicWave(this.ctx!.createPeriodicWave(real, imag, { disableNormalization: false })); }
+            catch { osc.setPeriodicWave(this.ctx!.createPeriodicWave(real, imag)); }
         } else {
             osc.type = type as OscillatorType;
         }
@@ -267,7 +333,7 @@ export class AudioEngine {
         // connect LFO pitch
         if (this.lfoGainPitch) this.lfoGainPitch.connect(osc.detune);
         // Store as a voice under key 'drone'
-        this.voices.set("drone", { osc, gain: gnode, startedAt: now });
+        this.voices.set("drone", { osc, gain: gnode, startedAt: now, freq });
         // For envelope on drone
         osc.start();
 
@@ -280,8 +346,8 @@ export class AudioEngine {
         g.linearRampToValueAtTime(peak, now + Math.max(0.001, attack));
         g.linearRampToValueAtTime(peak * sustain, now + Math.max(0.001, attack) + Math.max(0.001, decay));
 
-        // Filter envelope for drone (use full scale)
-        this.triggerFilterEnv(now, 1);
+        // Filter envelope for drone (use full scale), keytracked base
+        this.triggerFilterEnvForNote(now, 1, freq);
     }
 
     stopTestTone() {
@@ -311,6 +377,14 @@ export class AudioEngine {
         this.releaseFilterEnv(now);
     }
 
+    allNotesOff() {
+        if (!this.ctx) return;
+        const ids = Array.from(this.voices.keys());
+        ids.forEach((id) => this.noteOff(id));
+        if (this.osc) this.stopTestTone();
+        this.releaseFilterEnv(this.ctx.currentTime);
+    }
+
     noteOn(noteNumber: number, velocity = 1, id: number | string = noteNumber) {
         this.ensureContext();
         const now = this.ctx!.currentTime;
@@ -328,9 +402,14 @@ export class AudioEngine {
         }
 
         const osc = this.ctx!.createOscillator();
-        if (this.currentWave === "custom" && this.customWave) osc.setPeriodicWave(this.customWave);
-        else osc.type = this.currentWave as OscillatorType;
         const freq = 440 * Math.pow(2, (noteNumber - 69) / 12);
+        if (this.currentWave === "custom" && this.customSamples) {
+            const { real, imag } = this.buildPeriodicForFreq(this.customSamples, freq, this.ctx!.sampleRate);
+            try { osc.setPeriodicWave(this.ctx!.createPeriodicWave(real, imag, { disableNormalization: false })); }
+            catch { osc.setPeriodicWave(this.ctx!.createPeriodicWave(real, imag)); }
+        } else {
+            osc.type = this.currentWave as OscillatorType;
+        }
         osc.frequency.setValueAtTime(freq, now);
         const vGain = this.ctx!.createGain();
         vGain.gain.value = 0;
@@ -347,10 +426,10 @@ export class AudioEngine {
         const peak = this.lerp(1, velocity, this.ampVelSense);
         g.linearRampToValueAtTime(peak, now + Math.max(0.001, attack));
         g.linearRampToValueAtTime(peak * sustain, now + Math.max(0.001, attack) + Math.max(0.001, decay));
-        this.voices.set(id, { osc, gain: vGain, startedAt: now });
+        this.voices.set(id, { osc, gain: vGain, startedAt: now, freq });
 
-        // Filter envelope globally, scaled by velocity
-        this.triggerFilterEnv(now, this.lerp(1, velocity, this.filtVelSense));
+        // Filter envelope globally, scaled by velocity, keytracked base
+        this.triggerFilterEnvForNote(now, this.lerp(1, velocity, this.filtVelSense), freq);
     }
 
     noteOff(id: number | string) {
@@ -388,21 +467,26 @@ export class AudioEngine {
         if (this.recMode) throw new Error("Already recording");
 
         if (format === "wav") {
-            // Capture via ScriptProcessor into Float32 chunks
-            const proc = this.ctx.createScriptProcessor(4096, 1, 1);
-            this.scriptProc = proc;
             this.wavChunks = [];
-            proc.onaudioprocess = (e) => {
-                const input = e.inputBuffer.getChannelData(0);
-                // Copy to avoid re-use of the underlying buffer
-                this.wavChunks.push(new Float32Array(input));
-                // keep output silent
-                const out = e.outputBuffer.getChannelData(0);
-                out.fill(0);
+            const start = async () => {
+                if (!this.workletLoaded) {
+                    await this.ctx!.audioWorklet.addModule('/worklets/recorder.js');
+                    this.workletLoaded = true;
+                }
+                const node = new AudioWorkletNode(this.ctx!, 'recorder-processor', {
+                    numberOfInputs: 1,
+                    numberOfOutputs: 0,
+                });
+                node.port.onmessage = (e) => {
+                    const buf = e.data as Float32Array;
+                    if (buf && buf.length) this.wavChunks.push(new Float32Array(buf));
+                };
+                this.recorderNode = node;
+                this.master!.connect(node);
             };
-            // Branch master to processor, and processor to destination (silent but keeps it alive)
-            this.master!.connect(proc);
-            proc.connect(this.ctx.destination);
+            // fire and forget
+            // eslint-disable-next-line @typescript-eslint/no-floating-promises
+            start();
             this.recMode = "wav";
             return { mode: "wav", mimeType: "audio/wav" };
         }
@@ -438,11 +522,15 @@ export class AudioEngine {
         this.recMode = undefined;
 
         if (mode === "wav") {
-            // Detach processor
+            // Detach worklet
             try {
-                this.scriptProc?.disconnect();
-                this.master?.disconnect(this.scriptProc!);
+                if (this.recorderNode) {
+                    this.master?.disconnect(this.recorderNode);
+                    this.recorderNode.port.postMessage({ type: 'enable', value: false });
+                    this.recorderNode.disconnect();
+                }
             } catch {}
+            this.recorderNode = undefined;
             const chunks = this.wavChunks;
             this.wavChunks = [];
             // Concatenate Float32 chunks
@@ -517,6 +605,19 @@ export class AudioEngine {
         for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
     }
 
+    private makeImpulseResponse(sampleRate: number, seconds: number) {
+        const len = Math.floor(sampleRate * seconds);
+        const ir = this.ctx!.createBuffer(2, len, sampleRate);
+        for (let ch = 0; ch < 2; ch++) {
+            const d = ir.getChannelData(ch);
+            for (let i = 0; i < len; i++) {
+                const t = i / len;
+                d[i] = (Math.random() * 2 - 1) * Math.pow(1 - t, 3);
+            }
+        }
+        return ir;
+    }
+
     private lerp(a: number, b: number, t: number) {
         return a + (b - a) * t;
     }
@@ -524,6 +625,20 @@ export class AudioEngine {
     private triggerFilterEnv(now: number, velScale: number) {
         if (!this.filter) return;
         const base = this.filterCutoff;
+        const { attack, decay, sustain, amountHz } = this.fenv;
+        if (amountHz <= 0) return;
+        const peak = Math.max(20, Math.min(20000, base + amountHz * velScale));
+        const sus = Math.max(20, Math.min(20000, base + amountHz * sustain * velScale));
+        const p = this.filter.frequency;
+        p.cancelScheduledValues(now);
+        p.setValueAtTime(base, now);
+        p.linearRampToValueAtTime(peak, now + Math.max(0.001, attack));
+        p.linearRampToValueAtTime(sus, now + Math.max(0.001, attack) + Math.max(0.001, decay));
+    }
+
+    private triggerFilterEnvForNote(now: number, velScale: number, freq: number) {
+        if (!this.filter) return;
+        const base = this.computeKeytrackedCutoff(freq);
         const { attack, decay, sustain, amountHz } = this.fenv;
         if (amountHz <= 0) return;
         const peak = Math.max(20, Math.min(20000, base + amountHz * velScale));
@@ -546,6 +661,12 @@ export class AudioEngine {
         p.linearRampToValueAtTime(base, now + Math.max(0.001, release));
     }
 
+    private computeKeytrackedCutoff(freq: number) {
+        const semis = Math.log2(freq / 440) * 12;
+        const factor = Math.pow(2, (this.filtKeytrack * semis) / 12);
+        return Math.max(20, Math.min(20000, this.filterCutoff * factor));
+    }
+
     // --- Custom waveform ---
     setCustomWaveShape(samples: Float32Array) {
         this.ensureContext();
@@ -555,47 +676,21 @@ export class AudioEngine {
         const s = new Float32Array(M);
         for (let i = 0; i < M; i++) s[i] = Math.max(-1, Math.min(1, samples[i]));
         this.customSamples = s;
-
-        const harmonics = Math.min(64, Math.floor(M / 2));
-        const real = new Float32Array(harmonics + 1);
-        const imag = new Float32Array(harmonics + 1);
-
-        // DFT to cosine (real) / sine (imag) coefficients
-        // WebAudio expects index 0 to be DC (real[0]) and imag[0] = 0.
-        // Scale with 2/M to match standard Fourier series for periodic signals.
-        let sum = 0;
-        for (let n = 0; n < M; n++) sum += s[n];
-        real[0] = (2 / M) * sum; // DC
-        imag[0] = 0;
-
-        for (let k = 1; k <= harmonics; k++) {
-            let ak = 0;
-            let bk = 0;
-            for (let n = 0; n < M; n++) {
-                const phase = (2 * Math.PI * k * n) / M;
-                const v = s[n];
-                ak += v * Math.cos(phase);
-                bk += v * Math.sin(phase);
+        // Recompute for running voices based on each voice frequency
+        if (this.currentWave === "custom") {
+            const sr = this.ctx.sampleRate;
+            if (this.osc && this.voices.has("drone")) {
+                const f = this.voices.get("drone")?.freq || this.currentFreq;
+                const { real, imag } = this.buildPeriodicForFreq(s, f, sr);
+                try { this.osc.setPeriodicWave(this.ctx.createPeriodicWave(real, imag, { disableNormalization: false })); }
+                catch { this.osc.setPeriodicWave(this.ctx.createPeriodicWave(real, imag)); }
             }
-            real[k] = (2 / M) * ak;
-            imag[k] = (2 / M) * bk;
-        }
-
-        try {
-            // Let the system normalize magnitudes to avoid loudness jumps
-            this.customWave = this.ctx.createPeriodicWave(real, imag, { disableNormalization: false });
-        } catch {
-            this.customWave = this.ctx.createPeriodicWave(real, imag);
-        }
-
-        if (this.currentWave === "custom" && this.osc && this.customWave) {
-            this.osc.setPeriodicWave(this.customWave);
-        }
-
-        // Also update any active poly voices
-        if (this.currentWave === "custom" && this.customWave) {
-            this.voices.forEach((v) => {
-                try { v.osc.setPeriodicWave(this.customWave!); } catch {}
+            this.voices.forEach((v, key) => {
+                if (key === "drone") return;
+                const f = v.freq || this.currentFreq;
+                const { real, imag } = this.buildPeriodicForFreq(s, f, sr);
+                try { v.osc.setPeriodicWave(this.ctx.createPeriodicWave(real, imag, { disableNormalization: false })); }
+                catch { v.osc.setPeriodicWave(this.ctx.createPeriodicWave(real, imag)); }
             });
         }
     }
@@ -687,5 +782,24 @@ export class AudioEngine {
             real[k] = (2 / M) * ak; imag[k] = (2 / M) * bk;
         }
         return { real, imag };
+    }
+
+    private buildPeriodicForFreq(samples: Float32Array, freq: number, sampleRate: number) {
+        const nyquist = sampleRate / 2;
+        const maxH = Math.max(1, Math.floor(nyquist / Math.max(1, freq)));
+        return this.buildPeriodicFromSamples(samples, Math.min(64, maxH));
+    }
+
+    private startNoiseSrc() {
+        if (!this.ctx || !this.noiseGain) return;
+        try { if (this.noiseSrc) { this.noiseSrc.stop(); this.noiseSrc.disconnect(); } } catch {}
+        const noiseBuf = this.ctx.createBuffer(1, this.ctx.sampleRate * 2, this.ctx.sampleRate);
+        const data = noiseBuf.getChannelData(0);
+        for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+        this.noiseSrc = this.ctx.createBufferSource();
+        this.noiseSrc.buffer = noiseBuf;
+        this.noiseSrc.loop = true;
+        this.noiseSrc.connect(this.noiseGain);
+        this.noiseSrc.start();
     }
 }

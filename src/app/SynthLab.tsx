@@ -37,6 +37,16 @@ export default function SynthLab() {
     const [tremolo, setTremolo] = useState(0);
     const [noise, setNoise] = useState(0);
 
+    // Filter keytracking
+    const [fKeytrack, setFKeytrack] = useState(0);
+
+    // FX
+    const [delayTime, setDelayTime] = useState(0);
+    const [delayFb, setDelayFb] = useState(0.25);
+    const [delayMix, setDelayMix] = useState(0);
+    const [revSize, setRevSize] = useState(2);
+    const [revMix, setRevMix] = useState(0);
+
     // Filter envelope + velocity sens + polyphony
     const [fAttack, setFAttack] = useState(0.005);
     const [fDecay, setFDecay] = useState(0.2);
@@ -108,6 +118,15 @@ export default function SynthLab() {
     useEffect(() => {
         engine.setNoiseLevel(noise);
     }, [noise, engine]);
+    useEffect(() => {
+        engine.setFilterKeytrack(fKeytrack);
+    }, [fKeytrack, engine]);
+    useEffect(() => {
+        engine.setDelay(delayTime, delayFb, delayMix);
+    }, [delayTime, delayFb, delayMix, engine]);
+    useEffect(() => {
+        engine.setReverb(revSize, revMix);
+    }, [revSize, revMix, engine]);
 
     // Optional: Web MIDI input
     useEffect(() => {
@@ -280,6 +299,7 @@ export default function SynthLab() {
                     step={0.01}
                     format={(v) => `${v.toFixed(2)}s`}
                 />
+                <Knob label="Filt KT" value={fKeytrack} onChange={setFKeytrack} min={0} max={1} step={0.01} format={(v)=>`${Math.round(v*100)}%`} />
                 <Knob
                     label="LFO Rate"
                     value={lfoRate}
@@ -303,9 +323,9 @@ export default function SynthLab() {
                     value={filterLfo}
                     onChange={setFilterLfo}
                     min={0}
-                    max={2000}
+                    max={2400}
                     step={5}
-                    format={(v) => `${Math.round(v)} Hz`}
+                    format={(v) => `${Math.round(v)} c`}
                 />
                 <Knob
                     label="Tremolo"
@@ -327,8 +347,18 @@ export default function SynthLab() {
                 />
             </div>
 
+            {/* FX */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-4">
+                <Knob label="Delay" value={delayTime} onChange={setDelayTime} min={0} max={2} step={0.01} format={(v)=>`${v.toFixed(2)}s`} />
+                <Knob label="Dly FB" value={delayFb} onChange={setDelayFb} min={0} max={0.95} step={0.01} format={(v)=>`${Math.round(v*100)}%`} />
+                <Knob label="Dly Mix" value={delayMix} onChange={setDelayMix} min={0} max={1} step={0.01} format={(v)=>`${Math.round(v*100)}%`} />
+                <Knob label="Rev Size" value={revSize} onChange={setRevSize} min={0.1} max={6} step={0.1} format={(v)=>`${v.toFixed(1)}s`} />
+                <Knob label="Rev Mix" value={revMix} onChange={setRevMix} min={0} max={1} step={0.01} format={(v)=>`${Math.round(v*100)}%`} />
+            </div>
+
             {/* Recording */}
             <div className="flex items-center gap-3 flex-wrap">
+                <button onClick={() => engine.allNotesOff()} className="px-3 py-1.5 rounded border hover:opacity-80">Panic (All Notes Off)</button>
                 <div className="flex items-center gap-2">
                     <label className="text-sm opacity-80">Export as</label>
                     <select

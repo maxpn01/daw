@@ -1,8 +1,9 @@
 "use client";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 export function Visualizer({ analyser }: { analyser?: AnalyserNode }) {
     const ref = useRef<HTMLCanvasElement>(null);
+    const [mode, setMode] = useState<'time'|'spectrum'>('time');
 
     useEffect(() => {
         const canvas = ref.current;
@@ -30,24 +31,36 @@ export function Visualizer({ analyser }: { analyser?: AnalyserNode }) {
         if (!analyser) return;
 
         const buffer = new Uint8Array(analyser.fftSize);
+        const freqBuf = new Uint8Array(analyser.frequencyBinCount);
         let raf = 0;
         const loop = () => {
             raf = requestAnimationFrame(loop);
-            analyser.getByteTimeDomainData(buffer);
             ctx.clearRect(0, 0, cssW, cssH);
-            ctx.beginPath();
-            for (let i = 0; i < buffer.length; i++) {
-                const x = (i / (buffer.length - 1)) * cssW;
-                const y = (buffer[i] / 255) * cssH;
-                if (i === 0) ctx.moveTo(x, y);
-                else ctx.lineTo(x, y);
+            if (mode === 'time') {
+                analyser.getByteTimeDomainData(buffer);
+                ctx.beginPath();
+                for (let i = 0; i < buffer.length; i++) {
+                    const x = (i / (buffer.length - 1)) * cssW;
+                    const y = (buffer[i] / 255) * cssH;
+                    if (i === 0) ctx.moveTo(x, y);
+                    else ctx.lineTo(x, y);
+                }
+                ctx.stroke();
+            } else {
+                analyser.getByteFrequencyData(freqBuf);
+                const barW = cssW / freqBuf.length;
+                for (let i = 0; i < freqBuf.length; i++) {
+                    const v = freqBuf[i] / 255;
+                    const h = v * cssH;
+                    ctx.fillStyle = bodyColor as string;
+                    ctx.fillRect(i * barW, cssH - h, Math.max(1, barW - 1), h);
+                }
             }
-            ctx.stroke();
         };
 
         loop();
         return () => cancelAnimationFrame(raf);
-    }, [analyser]);
+    }, [analyser, mode]);
 
     // Show a clear placeholder until an analyser is available
     if (!analyser) {
@@ -58,5 +71,14 @@ export function Visualizer({ analyser }: { analyser?: AnalyserNode }) {
         );
     }
 
-    return <canvas ref={ref} className="w-full h-40 border" />;
+    return (
+        <div className="grid gap-2">
+            <div className="flex items-center gap-2 text-xs opacity-80">
+                <span>View:</span>
+                <button className={`px-2 py-0.5 rounded border ${mode==='time'?'bg-cyan-600/20 border-cyan-400':''}`} onClick={()=>setMode('time')}>Wave</button>
+                <button className={`px-2 py-0.5 rounded border ${mode==='spectrum'?'bg-cyan-600/20 border-cyan-400':''}`} onClick={()=>setMode('spectrum')}>Spectrum</button>
+            </div>
+            <canvas ref={ref} className="w-full h-40 border" />
+        </div>
+    );
 }
