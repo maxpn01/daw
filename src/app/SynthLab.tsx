@@ -6,6 +6,8 @@ import { AudioEngine, Wave } from "@/lib/audio/AudioEngine";
 import { Visualizer } from "@/components/Visualizer";
 import Knob from "@/components/Knob";
 import WaveEditor from "@/components/WaveEditor";
+import Keyboard from "@/components/Keyboard";
+import SampleExportPanel from "@/components/SampleExportPanel";
 
 export default function SynthLab() {
     const engine = useMemo(() => new AudioEngine(), []);
@@ -25,6 +27,13 @@ export default function SynthLab() {
     const [sustain, setSustain] = useState(0.8);
     const [release, setRelease] = useState(0.2);
     const [customShape, setCustomShape] = useState(() => makeSine(256));
+
+    // LFO / noise
+    const [lfoRate, setLfoRate] = useState(5);
+    const [vibrato, setVibrato] = useState(0);
+    const [filterLfo, setFilterLfo] = useState(0);
+    const [tremolo, setTremolo] = useState(0);
+    const [noise, setNoise] = useState(0);
 
     // recording
     const [recActive, setRecActive] = useState(false);
@@ -64,6 +73,45 @@ export default function SynthLab() {
         // keep custom waveform in sync
         engine.setCustomWaveShape(customShape);
     }, [customShape, engine]);
+
+    useEffect(() => {
+        engine.setLfoRate(lfoRate);
+    }, [lfoRate, engine]);
+    useEffect(() => {
+        engine.setVibratoCents(vibrato);
+    }, [vibrato, engine]);
+    useEffect(() => {
+        engine.setFilterLfoDepth(filterLfo);
+    }, [filterLfo, engine]);
+    useEffect(() => {
+        engine.setTremoloDepth(tremolo);
+    }, [tremolo, engine]);
+    useEffect(() => {
+        engine.setNoiseLevel(noise);
+    }, [noise, engine]);
+
+    // Optional: Web MIDI input
+    useEffect(() => {
+        const active: Array<() => void> = [];
+        const anyNav: any = navigator as any;
+        if (!anyNav.requestMIDIAccess) return;
+        anyNav.requestMIDIAccess().then((access: any) => {
+            access.inputs.forEach((input: any) => {
+                const onmidimessage = (e: any) => {
+                    const [status, note, velocity] = e.data as number[];
+                    const cmd = status & 0xf0;
+                    const id = `${input.id}:${note}`;
+                    if (cmd === 0x90 && velocity > 0) engine.noteOn(note, velocity / 127, id);
+                    else if (cmd === 0x80 || (cmd === 0x90 && velocity === 0)) engine.noteOff(id);
+                };
+                input.addEventListener("midimessage", onmidimessage);
+                active.push(() => input.removeEventListener("midimessage", onmidimessage));
+            });
+        });
+        return () => {
+            active.forEach((fn) => fn());
+        };
+    }, [engine]);
 
     const toggleTone = async () => {
         await engine.resume();
@@ -211,6 +259,51 @@ export default function SynthLab() {
                     step={0.01}
                     format={(v) => `${v.toFixed(2)}s`}
                 />
+                <Knob
+                    label="LFO Rate"
+                    value={lfoRate}
+                    onChange={setLfoRate}
+                    min={0.1}
+                    max={20}
+                    step={0.1}
+                    format={(v) => `${v.toFixed(1)} Hz`}
+                />
+                <Knob
+                    label="Vibrato"
+                    value={vibrato}
+                    onChange={setVibrato}
+                    min={0}
+                    max={100}
+                    step={1}
+                    format={(v) => `${Math.round(v)} c`}
+                />
+                <Knob
+                    label="Filt LFO"
+                    value={filterLfo}
+                    onChange={setFilterLfo}
+                    min={0}
+                    max={2000}
+                    step={5}
+                    format={(v) => `${Math.round(v)} Hz`}
+                />
+                <Knob
+                    label="Tremolo"
+                    value={tremolo}
+                    onChange={setTremolo}
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    format={(v) => `${Math.round(v * 100)}%`}
+                />
+                <Knob
+                    label="Noise"
+                    value={noise}
+                    onChange={setNoise}
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    format={(v) => `${Math.round(v * 100)}%`}
+                />
             </div>
 
             {/* Recording */}
@@ -241,6 +334,20 @@ export default function SynthLab() {
 
             {/* Custom Waveform editor */}
             {wave === "custom" && <WaveEditor value={customShape} onChange={setCustomShape} height={180} />}
+
+            {/* Keyboard */}
+            <div className="grid gap-2">
+                <div className="text-sm opacity-80">Keyboard (click or use QWERTY: Z row = C3, Q row = C4)</div>
+                <Keyboard
+                    baseNote={48}
+                    octaves={2}
+                    onNoteOn={(n, v, id) => engine.noteOn(n, v ?? 1, id ?? n)}
+                    onNoteOff={(id) => engine.noteOff(id)}
+                />
+            </div>
+
+            {/* Export */}
+            <SampleExportPanel engine={engine} />
 
             <p className="text-xs opacity-60">
                 Tip: tweak knobs while recording to capture changes. WAV records raw PCM in-browser. MP3 depends on
