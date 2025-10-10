@@ -1,5 +1,5 @@
-import SynthLab from "./SynthLab";
+import DAW from "./DAW";
 
 export default function Page() {
-    return <SynthLab />;
+    return <DAW />;
 }
