@@ -5,6 +5,8 @@ import { useEffect, useMemo, useState } from "react";
 import { AudioEngine, Wave } from "@/lib/audio/AudioEngine";
 import { Visualizer } from "@/components/Visualizer";
 import Knob from "@/components/Knob";
+import LogKnob from "@/components/LogKnob";
+import PresetPanel, { SynthPreset } from "@/components/PresetPanel";
 import WaveEditor from "@/components/WaveEditor";
 import Keyboard from "@/components/Keyboard";
 import SampleExportPanel from "@/components/SampleExportPanel";
@@ -34,6 +36,16 @@ export default function SynthLab() {
     const [filterLfo, setFilterLfo] = useState(0);
     const [tremolo, setTremolo] = useState(0);
     const [noise, setNoise] = useState(0);
+
+    // Filter envelope + velocity sens + polyphony
+    const [fAttack, setFAttack] = useState(0.005);
+    const [fDecay, setFDecay] = useState(0.2);
+    const [fSustain, setFSustain] = useState(0.0);
+    const [fRelease, setFRelease] = useState(0.2);
+    const [fAmount, setFAmount] = useState(0);
+    const [velAmp, setVelAmp] = useState(1);
+    const [velFilt, setVelFilt] = useState(0.5);
+    const [maxVoices, setMaxVoices] = useState(16);
 
     // recording
     const [recActive, setRecActive] = useState(false);
@@ -73,6 +85,13 @@ export default function SynthLab() {
         // keep custom waveform in sync
         engine.setCustomWaveShape(customShape);
     }, [customShape, engine]);
+
+    useEffect(() => {
+        engine.setFilterEnv(fAttack, fDecay, fSustain, fRelease, fAmount);
+    }, [engine, fAttack, fDecay, fSustain, fRelease, fAmount]);
+    useEffect(() => { engine.setAmpVelocitySensitivity(velAmp); }, [engine, velAmp]);
+    useEffect(() => { engine.setFilterVelocitySensitivity(velFilt); }, [engine, velFilt]);
+    useEffect(() => { engine.setMaxVoices(maxVoices); }, [engine, maxVoices]);
 
     useEffect(() => {
         engine.setLfoRate(lfoRate);
@@ -203,15 +222,7 @@ export default function SynthLab() {
                     step={0.01}
                     format={(v) => `${Math.round(v * 100)}%`}
                 />
-                <Knob
-                    label="Cutoff"
-                    value={cutoff}
-                    onChange={setCutoff}
-                    min={50}
-                    max={20000}
-                    step={10}
-                    format={(v) => `${Math.round(v)} Hz`}
-                />
+                <LogKnob label="Cutoff" value={cutoff} onChange={setCutoff} min={50} max={20000} />
                 <Knob label="Resonance" value={q} onChange={setQ} min={0.1} max={20} step={0.1} />
                 <Knob
                     label="Drive"
@@ -241,6 +252,16 @@ export default function SynthLab() {
                     step={0.01}
                     format={(v) => `${v.toFixed(2)}s`}
                 />
+                {/* Filter Env */}
+                <Knob label="F Att" value={fAttack} onChange={setFAttack} min={0} max={2} step={0.005} format={(v) => `${v.toFixed(3)}s`} />
+                <Knob label="F Dec" value={fDecay} onChange={setFDecay} min={0} max={2} step={0.01} format={(v) => `${v.toFixed(2)}s`} />
+                <Knob label="F Sus" value={fSustain} onChange={setFSustain} min={0} max={1} step={0.01} format={(v) => `${Math.round(v*100)}%`} />
+                <Knob label="F Rel" value={fRelease} onChange={setFRelease} min={0} max={3} step={0.01} format={(v) => `${v.toFixed(2)}s`} />
+                <Knob label="F Amt" value={fAmount} onChange={setFAmount} min={0} max={8000} step={10} format={(v) => `${Math.round(v)} Hz`} />
+                {/* Velocity + polyphony */}
+                <Knob label="Vel->Amp" value={velAmp} onChange={setVelAmp} min={0} max={1} step={0.01} format={(v) => `${Math.round(v*100)}%`} />
+                <Knob label="Vel->Filt" value={velFilt} onChange={setVelFilt} min={0} max={1} step={0.01} format={(v) => `${Math.round(v*100)}%`} />
+                <Knob label="Voices" value={maxVoices} onChange={(v)=>setMaxVoices(Math.round(v))} min={1} max={32} step={1} format={(v)=>`${Math.round(v)}`} />
                 <Knob
                     label="Sustain"
                     value={sustain}
@@ -348,6 +369,52 @@ export default function SynthLab() {
 
             {/* Export */}
             <SampleExportPanel engine={engine} />
+
+            {/* Presets */}
+            <PresetPanel
+                getPreset={() => ({
+                    name: "",
+                    wave,
+                    freq,
+                    vol,
+                    cutoff,
+                    q,
+                    dist,
+                    adsr: { a: attack, d: decay, s: sustain, r: release },
+                    fenv: { a: fAttack, d: fDecay, s: fSustain, r: fRelease, amount: fAmount },
+                    lfo: { rate: lfoRate, vibrato, filt: filterLfo, trem: tremolo },
+                    noise,
+                    vel: { amp: velAmp, filt: velFilt },
+                    maxVoices,
+                    customShape: Array.from(customShape),
+                } as any)}
+                applyPreset={(p: SynthPreset) => {
+                    setWave((p.wave as any) ?? wave);
+                    setFreq(p.freq ?? freq);
+                    setVol(p.vol ?? vol);
+                    setCutoff(p.cutoff ?? cutoff);
+                    setQ(p.q ?? q);
+                    setDist(p.dist ?? dist);
+                    setAttack(p.adsr?.a ?? attack);
+                    setDecay(p.adsr?.d ?? decay);
+                    setSustain(p.adsr?.s ?? sustain);
+                    setRelease(p.adsr?.r ?? release);
+                    setFAttack(p.fenv?.a ?? fAttack);
+                    setFDecay(p.fenv?.d ?? fDecay);
+                    setFSustain(p.fenv?.s ?? fSustain);
+                    setFRelease(p.fenv?.r ?? fRelease);
+                    setFAmount(p.fenv?.amount ?? fAmount);
+                    setLfoRate(p.lfo?.rate ?? lfoRate);
+                    setVibrato(p.lfo?.vibrato ?? vibrato);
+                    setFilterLfo(p.lfo?.filt ?? filterLfo);
+                    setTremolo(p.lfo?.trem ?? tremolo);
+                    setNoise(p.noise ?? noise);
+                    setVelAmp(p.vel?.amp ?? velAmp);
+                    setVelFilt(p.vel?.filt ?? velFilt);
+                    setMaxVoices(p.maxVoices ?? maxVoices);
+                    if (p.customShape && p.customShape.length) setCustomShape(Float32Array.from(p.customShape));
+                }}
+            />
 
             <p className="text-xs opacity-60">
                 Tip: tweak knobs while recording to capture changes. WAV records raw PCM in-browser. MP3 depends on

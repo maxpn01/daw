@@ -16,7 +16,7 @@ export class AudioEngine {
     private customSamples?: Float32Array;
 
     // Polyphony
-    private voices: Map<string | number, { osc: OscillatorNode; gain: GainNode } > = new Map();
+    private voices: Map<string | number, { osc: OscillatorNode; gain: GainNode; startedAt: number } > = new Map();
 
     // LFO
     private lfoOsc?: OscillatorNode;
@@ -41,6 +41,16 @@ export class AudioEngine {
     private filterQ = 0.8;
     private distAmount = 0; // 0..1
     private adsr = { attack: 0.01, decay: 0.1, sustain: 0.8, release: 0.2 };
+
+    // Filter envelope (global)
+    private fenv = { attack: 0.005, decay: 0.2, sustain: 0.0, release: 0.2, amountHz: 0 };
+
+    // Velocity sensitivity
+    private ampVelSense = 1; // 0..1 (0 = velocity ignored, 1 = full)
+    private filtVelSense = 0.5; // 0..1 scales filter env amount by velocity
+
+    // Polyphony
+    private maxVoices = 16;
 
     // Recording
     private recMode?: "wav" | "mp3" | "webm";
@@ -168,6 +178,28 @@ export class AudioEngine {
         };
     }
 
+    setFilterEnv(attack: number, decay: number, sustain: number, release: number, amountHz: number) {
+        this.fenv = {
+            attack: Math.max(0, attack),
+            decay: Math.max(0, decay),
+            sustain: Math.max(0, Math.min(1, sustain)),
+            release: Math.max(0, release),
+            amountHz: Math.max(0, amountHz),
+        };
+    }
+
+    setAmpVelocitySensitivity(amount01: number) {
+        this.ampVelSense = Math.max(0, Math.min(1, amount01));
+    }
+
+    setFilterVelocitySensitivity(amount01: number) {
+        this.filtVelSense = Math.max(0, Math.min(1, amount01));
+    }
+
+    setMaxVoices(n: number) {
+        this.maxVoices = Math.max(1, Math.floor(n));
+    }
+
     private makeDistortionCurve(amount01: number) {
         const n = 44100;
         const curve = new Float32Array(n);
@@ -235,7 +267,7 @@ export class AudioEngine {
         // connect LFO pitch
         if (this.lfoGainPitch) this.lfoGainPitch.connect(osc.detune);
         // Store as a voice under key 'drone'
-        this.voices.set("drone", { osc, gain: gnode });
+        this.voices.set("drone", { osc, gain: gnode, startedAt: now });
         // For envelope on drone
         osc.start();
 
@@ -244,8 +276,12 @@ export class AudioEngine {
         const { attack, decay, sustain } = this.adsr;
         g.cancelScheduledValues(now);
         g.setValueAtTime(0, now);
-        g.linearRampToValueAtTime(1, now + Math.max(0.001, attack));
-        g.linearRampToValueAtTime(sustain, now + Math.max(0.001, attack) + Math.max(0.001, decay));
+        const peak = this.lerp(1, 1, this.ampVelSense);
+        g.linearRampToValueAtTime(peak, now + Math.max(0.001, attack));
+        g.linearRampToValueAtTime(peak * sustain, now + Math.max(0.001, attack) + Math.max(0.001, decay));
+
+        // Filter envelope for drone (use full scale)
+        this.triggerFilterEnv(now, 1);
     }
 
     stopTestTone() {
@@ -270,12 +306,27 @@ export class AudioEngine {
             } catch {}
             try { this.voices.delete("drone"); } catch {}
         }, (Math.max(0.001, release) + 0.05) * 1000);
+
+        // Filter env release back to base
+        this.releaseFilterEnv(now);
     }
 
     noteOn(noteNumber: number, velocity = 1, id: number | string = noteNumber) {
         this.ensureContext();
         const now = this.ctx!.currentTime;
         if (this.voices.has(id)) return; // already playing
+
+        // Voice stealing
+        if (this.voices.size >= this.maxVoices) {
+            let oldestKey: string | number | undefined;
+            let oldestTime = Number.POSITIVE_INFINITY;
+            this.voices.forEach((v, key) => {
+                if (key === "drone") return;
+                if (v.startedAt < oldestTime) { oldestTime = v.startedAt; oldestKey = key; }
+            });
+            if (oldestKey !== undefined) this.noteOff(oldestKey);
+        }
+
         const osc = this.ctx!.createOscillator();
         if (this.currentWave === "custom" && this.customWave) osc.setPeriodicWave(this.customWave);
         else osc.type = this.currentWave as OscillatorType;
@@ -293,9 +344,13 @@ export class AudioEngine {
         const { attack, decay, sustain } = this.adsr;
         g.cancelScheduledValues(now);
         g.setValueAtTime(0, now);
-        g.linearRampToValueAtTime(velocity, now + Math.max(0.001, attack));
-        g.linearRampToValueAtTime(velocity * sustain, now + Math.max(0.001, attack) + Math.max(0.001, decay));
-        this.voices.set(id, { osc, gain: vGain });
+        const peak = this.lerp(1, velocity, this.ampVelSense);
+        g.linearRampToValueAtTime(peak, now + Math.max(0.001, attack));
+        g.linearRampToValueAtTime(peak * sustain, now + Math.max(0.001, attack) + Math.max(0.001, decay));
+        this.voices.set(id, { osc, gain: vGain, startedAt: now });
+
+        // Filter envelope globally, scaled by velocity
+        this.triggerFilterEnv(now, this.lerp(1, velocity, this.filtVelSense));
     }
 
     noteOff(id: number | string) {
@@ -317,6 +372,9 @@ export class AudioEngine {
             try { osc.disconnect(); } catch {}
             try { voice.gain.disconnect(); } catch {}
         }, (Math.max(0.001, release) + 0.05) * 1000);
+
+        // Approximate filter env release back to base cutoff
+        this.releaseFilterEnv(now);
     }
 
     // --- Recording ---
@@ -457,6 +515,35 @@ export class AudioEngine {
 
     private writeString(view: DataView, offset: number, str: string) {
         for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+    }
+
+    private lerp(a: number, b: number, t: number) {
+        return a + (b - a) * t;
+    }
+
+    private triggerFilterEnv(now: number, velScale: number) {
+        if (!this.filter) return;
+        const base = this.filterCutoff;
+        const { attack, decay, sustain, amountHz } = this.fenv;
+        if (amountHz <= 0) return;
+        const peak = Math.max(20, Math.min(20000, base + amountHz * velScale));
+        const sus = Math.max(20, Math.min(20000, base + amountHz * sustain * velScale));
+        const p = this.filter.frequency;
+        p.cancelScheduledValues(now);
+        p.setValueAtTime(base, now);
+        p.linearRampToValueAtTime(peak, now + Math.max(0.001, attack));
+        p.linearRampToValueAtTime(sus, now + Math.max(0.001, attack) + Math.max(0.001, decay));
+    }
+
+    private releaseFilterEnv(now: number) {
+        if (!this.filter) return;
+        const base = this.filterCutoff;
+        const { release } = this.fenv;
+        const p = this.filter.frequency;
+        const current = p.value;
+        p.cancelScheduledValues(now);
+        p.setValueAtTime(current, now);
+        p.linearRampToValueAtTime(base, now + Math.max(0.001, release));
     }
 
     // --- Custom waveform ---
