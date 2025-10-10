@@ -103,9 +103,15 @@ export default function SynthLab() {
     useEffect(() => {
         engine.setFilterEnv(fAttack, fDecay, fSustain, fRelease, fAmount);
     }, [engine, fAttack, fDecay, fSustain, fRelease, fAmount]);
-    useEffect(() => { engine.setAmpVelocitySensitivity(velAmp); }, [engine, velAmp]);
-    useEffect(() => { engine.setFilterVelocitySensitivity(velFilt); }, [engine, velFilt]);
-    useEffect(() => { engine.setMaxVoices(maxVoices); }, [engine, maxVoices]);
+    useEffect(() => {
+        engine.setAmpVelocitySensitivity(velAmp);
+    }, [engine, velAmp]);
+    useEffect(() => {
+        engine.setFilterVelocitySensitivity(velFilt);
+    }, [engine, velFilt]);
+    useEffect(() => {
+        engine.setMaxVoices(maxVoices);
+    }, [engine, maxVoices]);
 
     useEffect(() => {
         engine.setLfoRate(lfoRate);
@@ -281,19 +287,107 @@ export default function SynthLab() {
                     format={(v) => `${v.toFixed(2)}s`}
                 />
                 {/* Filter Env */}
-                <Knob label="F Att" value={fAttack} onChange={setFAttack} min={0} max={2} step={0.005} format={(v) => `${v.toFixed(3)}s`} />
-                <Knob label="F Dec" value={fDecay} onChange={setFDecay} min={0} max={2} step={0.01} format={(v) => `${v.toFixed(2)}s`} />
-                <Knob label="F Sus" value={fSustain} onChange={setFSustain} min={0} max={1} step={0.01} format={(v) => `${Math.round(v*100)}%`} />
-                <Knob label="F Rel" value={fRelease} onChange={setFRelease} min={0} max={3} step={0.01} format={(v) => `${v.toFixed(2)}s`} />
-                <Knob label="F Amt" value={fAmount} onChange={setFAmount} min={0} max={8000} step={10} format={(v) => `${Math.round(v)} Hz`} />
+                <Knob
+                    label="F Att"
+                    value={fAttack}
+                    onChange={setFAttack}
+                    min={0}
+                    max={2}
+                    step={0.005}
+                    format={(v) => `${v.toFixed(3)}s`}
+                />
+                <Knob
+                    label="F Dec"
+                    value={fDecay}
+                    onChange={setFDecay}
+                    min={0}
+                    max={2}
+                    step={0.01}
+                    format={(v) => `${v.toFixed(2)}s`}
+                />
+                <Knob
+                    label="F Sus"
+                    value={fSustain}
+                    onChange={setFSustain}
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    format={(v) => `${Math.round(v * 100)}%`}
+                />
+                <Knob
+                    label="F Rel"
+                    value={fRelease}
+                    onChange={setFRelease}
+                    min={0}
+                    max={3}
+                    step={0.01}
+                    format={(v) => `${v.toFixed(2)}s`}
+                />
+                <Knob
+                    label="F Amt"
+                    value={fAmount}
+                    onChange={setFAmount}
+                    min={0}
+                    max={8000}
+                    step={10}
+                    format={(v) => `${Math.round(v)} Hz`}
+                />
                 {/* Velocity + polyphony */}
-                <Knob label="Vel->Amp" value={velAmp} onChange={setVelAmp} min={0} max={1} step={0.01} format={(v) => `${Math.round(v*100)}%`} />
-                <Knob label="Vel->Filt" value={velFilt} onChange={setVelFilt} min={0} max={1} step={0.01} format={(v) => `${Math.round(v*100)}%`} />
-                <Knob label="Voices" value={maxVoices} onChange={(v)=>setMaxVoices(Math.round(v))} min={1} max={32} step={1} format={(v)=>`${Math.round(v)}`} />
+                <Knob
+                    label="Vel->Amp"
+                    value={velAmp}
+                    onChange={setVelAmp}
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    format={(v) => `${Math.round(v * 100)}%`}
+                />
+                <Knob
+                    label="Vel->Filt"
+                    value={velFilt}
+                    onChange={setVelFilt}
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    format={(v) => `${Math.round(v * 100)}%`}
+                />
+                <Knob
+                    label="Voices"
+                    value={maxVoices}
+                    onChange={(v) => setMaxVoices(Math.round(v))}
+                    min={1}
+                    max={32}
+                    step={1}
+                    format={(v) => `${Math.round(v)}`}
+                />
                 {/* Unison */}
-                <Knob label="Unison" value={unisonCount} onChange={(v)=>setUnisonCount(Math.round(v))} min={1} max={7} step={1} format={(v)=>`${Math.round(v)}`} />
-                <Knob label="Detune" value={unisonDetune} onChange={setUnisonDetune} min={0} max={100} step={1} format={(v)=>`${Math.round(v)} c`} />
-                <Knob label="Spread" value={stereoSpread} onChange={setStereoSpread} min={0} max={1} step={0.01} format={(v)=>`${Math.round(v*100)}%`} />
+                <Knob
+                    label="Unison"
+                    value={unisonCount}
+                    onChange={(v) => setUnisonCount(Math.round(v))}
+                    min={1}
+                    max={7}
+                    step={1}
+                    format={(v) => `${Math.round(v)}`}
+                />
+                <Knob
+                    label="Detune"
+                    value={unisonDetune}
+                    onChange={setUnisonDetune}
+                    min={0}
+                    max={100}
+                    step={1}
+                    format={(v) => `${Math.round(v)} c`}
+                />
+                <Knob
+                    label="Spread"
+                    value={stereoSpread}
+                    onChange={setStereoSpread}
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    format={(v) => `${Math.round(v * 100)}%`}
+                />
                 <Knob
                     label="Sustain"
                     value={sustain}
@@ -312,7 +406,15 @@ export default function SynthLab() {
                     step={0.01}
                     format={(v) => `${v.toFixed(2)}s`}
                 />
-                <Knob label="Filt KT" value={fKeytrack} onChange={setFKeytrack} min={0} max={1} step={0.01} format={(v)=>`${Math.round(v*100)}%`} />
+                <Knob
+                    label="Filt KT"
+                    value={fKeytrack}
+                    onChange={setFKeytrack}
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    format={(v) => `${Math.round(v * 100)}%`}
+                />
                 <Knob
                     label="LFO Rate"
                     value={lfoRate}
@@ -362,25 +464,76 @@ export default function SynthLab() {
 
             {/* FX */}
             <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-4">
-                <Knob label="Delay" value={delayTime} onChange={setDelayTime} min={0} max={2} step={0.01} format={(v)=>`${v.toFixed(2)}s`} />
-                <Knob label="Dly FB" value={delayFb} onChange={setDelayFb} min={0} max={0.95} step={0.01} format={(v)=>`${Math.round(v*100)}%`} />
-                <Knob label="Dly Mix" value={delayMix} onChange={setDelayMix} min={0} max={1} step={0.01} format={(v)=>`${Math.round(v*100)}%`} />
-                <Knob label="Rev Size" value={revSize} onChange={setRevSize} min={0.1} max={6} step={0.1} format={(v)=>`${v.toFixed(1)}s`} />
-                <Knob label="Rev Mix" value={revMix} onChange={setRevMix} min={0} max={1} step={0.01} format={(v)=>`${Math.round(v*100)}%`} />
+                <Knob
+                    label="Delay"
+                    value={delayTime}
+                    onChange={setDelayTime}
+                    min={0}
+                    max={2}
+                    step={0.01}
+                    format={(v) => `${v.toFixed(2)}s`}
+                />
+                <Knob
+                    label="Dly FB"
+                    value={delayFb}
+                    onChange={setDelayFb}
+                    min={0}
+                    max={0.95}
+                    step={0.01}
+                    format={(v) => `${Math.round(v * 100)}%`}
+                />
+                <Knob
+                    label="Dly Mix"
+                    value={delayMix}
+                    onChange={setDelayMix}
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    format={(v) => `${Math.round(v * 100)}%`}
+                />
+                <Knob
+                    label="Rev Size"
+                    value={revSize}
+                    onChange={setRevSize}
+                    min={0.1}
+                    max={6}
+                    step={0.1}
+                    format={(v) => `${v.toFixed(1)}s`}
+                />
+                <Knob
+                    label="Rev Mix"
+                    value={revMix}
+                    onChange={setRevMix}
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    format={(v) => `${Math.round(v * 100)}%`}
+                />
             </div>
 
             {/* Recording */}
             <div className="flex items-center gap-3 flex-wrap">
-                <button onClick={() => engine.allNotesOff()} className="px-3 py-1.5 rounded border hover:opacity-80">Panic (All Notes Off)</button>
+                <button onClick={() => engine.allNotesOff()} className="px-3 py-1.5 rounded border hover:opacity-80">
+                    Panic (All Notes Off)
+                </button>
                 <div className="flex items-center gap-2">
                     <label className="text-sm opacity-80">Export as</label>
-                    <select
-                        value={recFmt}
-                        onChange={(e) => setRecFmt(e.target.value as any)}
-                        className="border rounded px-2 py-1 text-sm bg-transparent">
-                        <option value="wav">WAV</option>
-                        <option value="mp3">MP3 (fallback to WebM if unsupported)</option>
-                    </select>
+                    <div className="relative">
+                        <select
+                            value={recFmt}
+                            onChange={(e) => setRecFmt(e.target.value as any)}
+                            className="border rounded px-2 pr-10 py-1.5 text-sm select-reset">
+                            <option value="wav">WAV</option>
+                            <option value="mp3">MP3 (fallback to WebM if unsupported)</option>
+                        </select>
+                        <svg
+                            className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 opacity-70"
+                            viewBox="0 0 20 20"
+                            fill="currentColor"
+                            aria-hidden="true">
+                            <path d="M5.23 7.21a.75.75 0 011.06.02L10 10.94l3.71-3.71a.75.75 0 111.06 1.06l-4.24 4.24a.75.75 0 01-1.06 0L5.21 8.29a.75.75 0 01.02-1.08z" />
+                        </svg>
+                    </div>
                 </div>
                 {!recActive ? (
                     <button onClick={startRec} className="px-3 py-1.5 rounded border hover:opacity-80">
@@ -415,23 +568,25 @@ export default function SynthLab() {
 
             {/* Presets */}
             <PresetPanel
-                getPreset={() => ({
-                    name: "",
-                    wave,
-                    freq,
-                    vol,
-                    cutoff,
-                    q,
-                    dist,
-                    adsr: { a: attack, d: decay, s: sustain, r: release },
-                    fenv: { a: fAttack, d: fDecay, s: fSustain, r: fRelease, amount: fAmount },
-                    lfo: { rate: lfoRate, vibrato, filt: filterLfo, trem: tremolo },
-                    noise,
-                    vel: { amp: velAmp, filt: velFilt },
-                    maxVoices,
-                    unison: { count: unisonCount, detune: unisonDetune, spread: stereoSpread },
-                    customShape: Array.from(customShape),
-                } as any)}
+                getPreset={() =>
+                    ({
+                        name: "",
+                        wave,
+                        freq,
+                        vol,
+                        cutoff,
+                        q,
+                        dist,
+                        adsr: { a: attack, d: decay, s: sustain, r: release },
+                        fenv: { a: fAttack, d: fDecay, s: fSustain, r: fRelease, amount: fAmount },
+                        lfo: { rate: lfoRate, vibrato, filt: filterLfo, trem: tremolo },
+                        noise,
+                        vel: { amp: velAmp, filt: velFilt },
+                        maxVoices,
+                        unison: { count: unisonCount, detune: unisonDetune, spread: stereoSpread },
+                        customShape: Array.from(customShape),
+                    } as any)
+                }
                 applyPreset={(p: SynthPreset) => {
                     setWave((p.wave as any) ?? wave);
                     setFreq(p.freq ?? freq);

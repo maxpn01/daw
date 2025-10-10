@@ -16,7 +16,7 @@ export type SynthPreset = {
     noise: number;
     vel: { amp: number; filt: number };
     maxVoices: number;
-    customShape?: number[]; // optional
+    customShape?: number[];
     unison?: { count: number; detune: number; spread: number };
 };
 
@@ -31,9 +31,8 @@ export default function PresetPanel({ getPreset, applyPreset }: Props) {
     const [name, setName] = useState("");
     const [list, setList] = useState<Record<string, SynthPreset>>({});
     const [selected, setSelected] = useState<string>("");
-    const [jsonText, setJsonText] = useState("");
     const [status, setStatus] = useState<string>("");
-    const [copied, setCopied] = useState(false);
+    const [importing, setImporting] = useState(false);
 
     useEffect(() => {
         try {
@@ -56,125 +55,230 @@ export default function PresetPanel({ getPreset, applyPreset }: Props) {
         const next = { ...list, [key]: p };
         saveList(next);
         setSelected(key);
+        setStatus(`Saved ${key}`);
     };
 
     const load = () => {
         if (!selected) return;
         const p = list[selected];
-        if (p) applyPreset(p);
+        if (p) {
+            applyPreset(p);
+            setStatus(`Loaded ${selected}`);
+        }
     };
 
     const del = () => {
         if (!selected) return;
+        const ok = window.confirm(`Delete preset "${selected}"?`);
+        if (!ok) return;
         // eslint-disable-next-line @typescript-eslint/no-unused-vars
         const { [selected]: _, ...rest } = list;
         saveList(rest);
+        setStatus(`Deleted ${selected}`);
         setSelected("");
     };
 
-    const copy = async () => {
-        const text = JSON.stringify(getPreset());
-        try {
-            await navigator.clipboard.writeText(text);
-            setCopied(true);
-            setStatus("Copied to clipboard");
-            setTimeout(() => setCopied(false), 1500);
-        } catch {
-            // Fallback
-            try {
-                const ta = document.createElement("textarea");
-                ta.value = text;
-                document.body.appendChild(ta);
-                ta.select();
-                document.execCommand("copy");
-                ta.remove();
-                setCopied(true);
-                setStatus("Copied to clipboard");
-                setTimeout(() => setCopied(false), 1500);
-            } catch {
-                setStatus("Copy failed. Select and copy manually.");
-                setJsonText(text);
-            }
-        }
+    const download = (data: string | Blob, filename: string) => {
+        const blob = typeof data === "string" ? new Blob([data], { type: "application/json" }) : data;
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => {
+            URL.revokeObjectURL(url);
+            a.remove();
+        }, 1000);
     };
 
-    const applyFromText = () => {
+    const sanitize = (s: string) => (s || "preset").replace(/[^a-z0-9_\-]+/gi, "-");
+
+    const exportCurrent = () => {
+        const p = getPreset();
+        const fname = sanitize(p.name || name) + ".json";
+        download(JSON.stringify(p, null, 2), fname);
+        setStatus(`Downloaded ${fname}`);
+    };
+
+    const exportSelected = () => {
+        if (!selected) {
+            setStatus("Select a saved preset to export");
+            return;
+        }
+        const p = list[selected];
+        if (!p) {
+            setStatus("Selected preset not found");
+            return;
+        }
+        const fname = sanitize(p.name || selected) + ".json";
+        download(JSON.stringify(p, null, 2), fname);
+        setStatus(`Downloaded ${fname}`);
+    };
+
+    const exportAll = () => {
+        const payload = JSON.stringify(list, null, 2);
+        const now = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+        download(payload, `presets-${now}.json`);
+        setStatus("Downloaded all presets");
+    };
+
+    const onImportFiles = async (files: FileList | null) => {
+        if (!files || files.length === 0) return;
+        setImporting(true);
+        setStatus("Importing...");
         try {
-            const p = JSON.parse(jsonText) as SynthPreset;
-            applyPreset(p);
-            setStatus("JSON applied");
+            const aggregate: Record<string, SynthPreset> = { ...list };
+            let applied = false;
+            let added = 0;
+            for (const file of Array.from(files)) {
+                const text = await file.text();
+                const data = JSON.parse(text);
+                if (Array.isArray(data)) {
+                    data.forEach((p: any) => {
+                        const key = (p?.name as string) || `Imported ${Object.keys(aggregate).length + 1}`;
+                        aggregate[key] = { ...(p as SynthPreset), name: key };
+                        added++;
+                    });
+                } else if (
+                    data &&
+                    typeof data === "object" &&
+                    !Array.isArray(data) &&
+                    !("wave" in data) &&
+                    !("adsr" in data)
+                ) {
+                    Object.entries(data as Record<string, SynthPreset>).forEach(([k, v]) => {
+                        const key = k || `Imported ${Object.keys(aggregate).length + 1}`;
+                        aggregate[key] = { ...v, name: v.name || key };
+                        added++;
+                    });
+                } else {
+                    const p = data as SynthPreset;
+                    const key = p.name || `Imported ${Object.keys(aggregate).length + 1}`;
+                    aggregate[key] = { ...p, name: key };
+                    applyPreset(p);
+                    setSelected(key);
+                    applied = true;
+                    added++;
+                }
+            }
+            saveList(aggregate);
+            setStatus(`Imported ${added} preset(s)${applied ? " and applied one" : ""}`);
         } catch (e: any) {
-            setStatus("Invalid JSON: " + (e?.message || "parse error"));
+            setStatus("Import failed: " + (e?.message || "invalid JSON"));
+        } finally {
+            setImporting(false);
         }
     };
 
     return (
-        <div className="grid gap-2 border rounded-md p-3">
+        <div className="grid gap-3 border rounded-md p-3">
             <div className="text-sm font-medium">Presets</div>
-            <div className="grid sm:grid-cols-2 gap-2 items-center">
+            <div className="grid sm:grid-cols-2 gap-3 items-center">
                 <div className="grid grid-cols-3 gap-2 items-center">
                     <input
-                        className="border rounded px-2 py-1 bg-transparent col-span-2"
+                        className="border rounded px-2 bg-transparent col-span-2 text-sm h-9"
                         placeholder="Preset name"
                         value={name}
                         onChange={(e) => setName(e.target.value)}
+                        aria-label="Preset name"
                     />
-                    <button className="px-2 py-1 border rounded" onClick={save}>
+                    <button
+                        type="button"
+                        className="px-3 py-1.5 rounded border hover:opacity-80 text-sm"
+                        onClick={save}
+                        title="Save current settings as a preset">
                         Save
                     </button>
                 </div>
                 <div className="grid grid-cols-4 gap-2 items-center">
-                    <select
-                        className="border rounded px-2 py-1 bg-transparent col-span-3"
-                        value={selected}
-                        onChange={(e) => setSelected(e.target.value)}>
-                        <option value="">-- Select saved --</option>
-                        {Object.keys(list).map((k) => (
-                            <option key={k} value={k}>
-                                {k}
-                            </option>
-                        ))}
-                    </select>
-                    <button className="px-2 py-1 border rounded" onClick={load}>
+                    <div className="relative col-span-3">
+                        <select
+                            className="w-full border rounded px-2 pr-10 py-1.5 text-sm select-reset"
+                            value={selected}
+                            onChange={(e) => setSelected(e.target.value)}
+                            aria-label="Saved presets">
+                            <option value="">-- Select saved --</option>
+                            {Object.keys(list).map((k) => (
+                                <option key={k} value={k}>
+                                    {k}
+                                </option>
+                            ))}
+                        </select>
+                        <svg
+                            className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 opacity-70"
+                            viewBox="0 0 20 20"
+                            fill="currentColor"
+                            aria-hidden="true">
+                            <path d="M5.23 7.21a.75.75 0 011.06.02L10 10.94l3.71-3.71a.75.75 0 111.06 1.06l-4.24 4.24a.75.75 0 01-1.06 0L5.21 8.29a.75.75 0 01.02-1.08z" />
+                        </svg>
+                    </div>
+                    <button
+                        type="button"
+                        className="px-3 py-1.5 rounded border hover:opacity-80 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                        onClick={load}
+                        disabled={!selected}
+                        title={selected ? `Load "${selected}"` : "Select a preset to load"}>
                         Load
                     </button>
                 </div>
-                <div className="grid grid-cols-5 gap-2 items-center">
-                    <button className="px-2 py-1 border rounded" onClick={del}>
+                <div className="flex gap-2 items-center flex-wrap sm:col-span-2">
+                    <button
+                        type="button"
+                        className="px-3 py-1.5 rounded border hover:opacity-80 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                        onClick={del}
+                        disabled={!selected}
+                        title={selected ? `Delete "${selected}"` : "Select a preset to delete"}>
                         Delete
                     </button>
-                    <div className="col-span-2 flex items-center gap-2">
-                        <button className="px-2 py-1 border rounded" onClick={copy} title="Copy current preset as JSON">
-                            Copy JSON
-                        </button>
-                        {copied && <span className="text-xs opacity-70">Copied!</span>}
-                    </div>
-                    {!!status && <div className="col-span-5 text-xs opacity-70">{status}</div>}
-                </div>
-            </div>
-            {/* Manual JSON field */}
-            <div className="grid gap-2">
-                <label className="text-sm opacity-80">Preset JSON</label>
-                <textarea
-                    className="border rounded p-2 font-mono text-xs bg-transparent"
-                    rows={6}
-                    placeholder="Paste or edit preset JSON here"
-                    value={jsonText}
-                    onChange={(e) => setJsonText(e.target.value)}
-                />
-                <div className="flex gap-2">
-                    <button className="px-2 py-1 border rounded" onClick={applyFromText}>
-                        Apply JSON
+                    <button
+                        type="button"
+                        className="px-3 py-1.5 rounded border hover:opacity-80 text-sm"
+                        onClick={exportCurrent}
+                        title="Download current preset as JSON">
+                        Export Current
                     </button>
                     <button
-                        className="px-2 py-1 border rounded"
-                        onClick={() => {
-                            setJsonText("");
-                            setStatus("");
-                        }}>
-                        Clear
+                        type="button"
+                        className="px-3 py-1.5 rounded border hover:opacity-80 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                        onClick={exportSelected}
+                        disabled={!selected}
+                        title={selected ? `Download "${selected}" as JSON` : "Select a preset to export"}>
+                        Export Selected
                     </button>
+                    <button
+                        type="button"
+                        className="px-3 py-1.5 rounded border hover:opacity-80 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                        onClick={exportAll}
+                        disabled={Object.keys(list).length === 0}
+                        title={
+                            Object.keys(list).length ? "Download all saved presets as JSON" : "No presets to export"
+                        }>
+                        Export All
+                    </button>
+                    <label
+                        className={`px-3 py-1.5 rounded border hover:opacity-80 text-sm text-center cursor-pointer ${
+                            importing ? "opacity-50 cursor-not-allowed pointer-events-none" : ""
+                        }`}
+                        title="Import preset(s) from .json">
+                        {importing ? "Importing..." : "Import"}
+                        <input
+                            type="file"
+                            accept="application/json,.json"
+                            multiple
+                            className="hidden"
+                            onChange={(e) => {
+                                const input = e.currentTarget;
+                                // Kick off import, then reset value so selecting the same file again re-triggers onChange
+                                void onImportFiles(input.files);
+                                input.value = "";
+                            }}
+                            aria-label="Import presets from JSON"
+                            disabled={importing}
+                        />
+                    </label>
                 </div>
+                {!!status && <div className="sm:col-span-2 text-xs opacity-70">{status}</div>}
             </div>
         </div>
     );

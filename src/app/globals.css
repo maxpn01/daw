@@ -1,26 +1,43 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+    --background: #ffffff;
+    --foreground: #171717;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+    --color-background: var(--background);
+    --color-foreground: var(--foreground);
+    --font-sans: var(--font-geist-sans);
+    --font-mono: var(--font-geist-mono);
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+    :root {
+        --background: #0a0a0a;
+        --foreground: #ededed;
+    }
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+    background: var(--background);
+    color: var(--foreground);
+    font-family: Arial, Helvetica, sans-serif;
+}
+
+/* Hide native arrow; keep theme colors; prefer dark popup */
+.select-reset {
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    appearance: none;
+    background: transparent;
+    color: inherit;
+    color-scheme: dark; /* try to get dark menus */
+}
+.select-reset option {
+    background: #0a0a0a; /* dark popup list */
+    color: #ededed; /* bright text */
+}
+select.select-reset::-ms-expand {
+    display: none;
 }
