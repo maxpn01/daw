@@ -16,7 +16,7 @@ export class AudioEngine {
     private customSamples?: Float32Array;
 
     // Polyphony
-    private voices: Map<string | number, { osc: OscillatorNode; gain: GainNode; startedAt: number; freq?: number } > = new Map();
+    private voices: Map<string | number, { oscs: OscillatorNode[]; gain: GainNode; startedAt: number; freq: number; filter?: BiquadFilterNode; panners?: StereoPannerNode[] } > = new Map();
 
     // LFO
     private lfoOsc?: OscillatorNode;
@@ -52,6 +52,9 @@ export class AudioEngine {
 
     // Polyphony
     private maxVoices = 16;
+    private unisonCount = 1; // 1..7
+    private unisonDetune = 0; // cents peak spread
+    private stereoSpread = 0; // 0..1
 
     // Recording
     private recMode?: "wav" | "mp3" | "webm";
@@ -235,6 +238,16 @@ export class AudioEngine {
         this.maxVoices = Math.max(1, Math.floor(n));
     }
 
+    setUnisonCount(n: number) {
+        this.unisonCount = Math.max(1, Math.min(7, Math.floor(n)));
+    }
+    setUnisonDetune(cents: number) {
+        this.unisonDetune = Math.max(0, Math.min(100, cents));
+    }
+    setStereoSpread(amount01: number) {
+        this.stereoSpread = Math.max(0, Math.min(1, amount01));
+    }
+
     setFilterKeytrack(amount01: number) {
         this.filtKeytrack = Math.max(0, Math.min(1, amount01));
     }
@@ -260,10 +273,11 @@ export class AudioEngine {
         if (this.lfoGainPitch) this.lfoGainPitch.gain.value = this.vibratoCents;
         // reconnect to active oscillators
         this.voices.forEach((v) => {
-            try {
-                this.lfoGainPitch!.disconnect(v.osc.detune);
-            } catch {}
-            this.lfoGainPitch!.connect(v.osc.detune);
+            const arr = v.oscs ?? [];
+            arr.forEach((o) => {
+                try { this.lfoGainPitch!.disconnect(o.detune); } catch {}
+                this.lfoGainPitch!.connect(o.detune);
+            });
         });
         if (this.osc) {
             try { this.lfoGainPitch!.disconnect(this.osc.detune); } catch {}
@@ -333,7 +347,7 @@ export class AudioEngine {
         // connect LFO pitch
         if (this.lfoGainPitch) this.lfoGainPitch.connect(osc.detune);
         // Store as a voice under key 'drone'
-        this.voices.set("drone", { osc, gain: gnode, startedAt: now, freq });
+        this.voices.set("drone", { oscs: [osc], gain: gnode, startedAt: now, freq });
         // For envelope on drone
         osc.start();
 
@@ -401,23 +415,46 @@ export class AudioEngine {
             if (oldestKey !== undefined) this.noteOff(oldestKey);
         }
 
-        const osc = this.ctx!.createOscillator();
         const freq = 440 * Math.pow(2, (noteNumber - 69) / 12);
-        if (this.currentWave === "custom" && this.customSamples) {
-            const { real, imag } = this.buildPeriodicForFreq(this.customSamples, freq, this.ctx!.sampleRate);
-            try { osc.setPeriodicWave(this.ctx!.createPeriodicWave(real, imag, { disableNormalization: false })); }
-            catch { osc.setPeriodicWave(this.ctx!.createPeriodicWave(real, imag)); }
-        } else {
-            osc.type = this.currentWave as OscillatorType;
-        }
-        osc.frequency.setValueAtTime(freq, now);
         const vGain = this.ctx!.createGain();
         vGain.gain.value = 0;
-        osc.connect(vGain);
+        // Per-voice filter
+        const vFilter = this.ctx!.createBiquadFilter();
+        vFilter.type = 'lowpass';
+        vFilter.Q.value = this.filterQ;
+        const baseCut = this.computeKeytrackedCutoff(freq);
+        vFilter.frequency.value = baseCut;
+        vFilter.connect(vGain);
         vGain.connect(this.mixGain!);
-        // LFO pitch routing
-        if (this.lfoGainPitch) this.lfoGainPitch.connect(osc.detune);
-        osc.start();
+        const oscs: OscillatorNode[] = [];
+        const pans: StereoPannerNode[] = [];
+        const n = this.unisonCount;
+        for (let i = 0; i < n; i++) {
+            const osc = this.ctx!.createOscillator();
+            if (this.currentWave === "custom" && this.customSamples) {
+                const { real, imag } = this.buildPeriodicForFreq(this.customSamples, freq, this.ctx!.sampleRate);
+                try { osc.setPeriodicWave(this.ctx!.createPeriodicWave(real, imag, { disableNormalization: false })); }
+                catch { osc.setPeriodicWave(this.ctx!.createPeriodicWave(real, imag)); }
+            } else {
+                osc.type = this.currentWave as OscillatorType;
+            }
+            osc.frequency.setValueAtTime(freq, now);
+            const pos = n === 1 ? 0 : (i / (n - 1)) * 2 - 1; // -1..1
+            const cents = pos * this.unisonDetune;
+            osc.detune.setValueAtTime(cents, now);
+            const pan = this.ctx!.createStereoPanner();
+            pan.pan.value = pos * this.stereoSpread;
+            const oGain = this.ctx!.createGain();
+            oGain.gain.value = 1 / Math.sqrt(n);
+            // chain: osc -> oGain -> pan -> vFilter
+            osc.connect(oGain);
+            oGain.connect(pan);
+            pan.connect(vFilter);
+            if (this.lfoGainPitch) this.lfoGainPitch.connect(osc.detune);
+            osc.start();
+            oscs.push(osc);
+            pans.push(pan);
+        }
         // ADSR gate on
         const g = vGain.gain;
         const { attack, decay, sustain } = this.adsr;
@@ -426,10 +463,10 @@ export class AudioEngine {
         const peak = this.lerp(1, velocity, this.ampVelSense);
         g.linearRampToValueAtTime(peak, now + Math.max(0.001, attack));
         g.linearRampToValueAtTime(peak * sustain, now + Math.max(0.001, attack) + Math.max(0.001, decay));
-        this.voices.set(id, { osc, gain: vGain, startedAt: now, freq });
+        this.voices.set(id, { oscs, gain: vGain, startedAt: now, freq, filter: vFilter, panners: pans });
 
-        // Filter envelope globally, scaled by velocity, keytracked base
-        this.triggerFilterEnvForNote(now, this.lerp(1, velocity, this.filtVelSense), freq);
+        // Filter envelope per voice
+        this.triggerFilterEnvOn(vFilter.frequency, now, this.lerp(1, velocity, this.filtVelSense), baseCut);
     }
 
     noteOff(id: number | string) {
@@ -442,18 +479,19 @@ export class AudioEngine {
         const current = voice.gain.gain.value;
         voice.gain.gain.setValueAtTime(current, now);
         voice.gain.gain.linearRampToValueAtTime(0, now + Math.max(0.001, release));
-        const osc = voice.osc;
+        const oscs = voice.oscs;
         this.voices.delete(id);
-        try {
-            osc.stop(now + Math.max(0.001, release) + 0.01);
-        } catch {}
+        try { oscs.forEach((o) => o.stop(now + Math.max(0.001, release) + 0.01)); } catch {}
         setTimeout(() => {
-            try { osc.disconnect(); } catch {}
+            try { oscs.forEach((o) => o.disconnect()); } catch {}
+            try { voice.panners?.forEach((p) => p.disconnect()); } catch {}
+            try { voice.filter?.disconnect(); } catch {}
             try { voice.gain.disconnect(); } catch {}
         }, (Math.max(0.001, release) + 0.05) * 1000);
 
-        // Approximate filter env release back to base cutoff
-        this.releaseFilterEnv(now);
+        // Per-voice filter return
+        if (voice.filter) this.releaseFilterEnvOn(voice.filter.frequency, now, this.computeKeytrackedCutoff(voice.freq));
+        else this.releaseFilterEnv(now);
     }
 
     // --- Recording ---
@@ -650,6 +688,25 @@ export class AudioEngine {
         p.linearRampToValueAtTime(sus, now + Math.max(0.001, attack) + Math.max(0.001, decay));
     }
 
+    private triggerFilterEnvOn(param: AudioParam, now: number, velScale: number, base: number) {
+        const { attack, decay, sustain, amountHz } = this.fenv;
+        if (amountHz <= 0) return;
+        const peak = Math.max(20, Math.min(20000, base + amountHz * velScale));
+        const sus = Math.max(20, Math.min(20000, base + amountHz * sustain * velScale));
+        param.cancelScheduledValues(now);
+        param.setValueAtTime(base, now);
+        param.linearRampToValueAtTime(peak, now + Math.max(0.001, attack));
+        param.linearRampToValueAtTime(sus, now + Math.max(0.001, attack) + Math.max(0.001, decay));
+    }
+
+    private releaseFilterEnvOn(param: AudioParam, now: number, base: number) {
+        const { release } = this.fenv;
+        const current = param.value;
+        param.cancelScheduledValues(now);
+        param.setValueAtTime(current, now);
+        param.linearRampToValueAtTime(base, now + Math.max(0.001, release));
+    }
+
     private releaseFilterEnv(now: number) {
         if (!this.filter) return;
         const base = this.filterCutoff;
@@ -689,8 +746,10 @@ export class AudioEngine {
                 if (key === "drone") return;
                 const f = v.freq || this.currentFreq;
                 const { real, imag } = this.buildPeriodicForFreq(s, f, sr);
-                try { v.osc.setPeriodicWave(this.ctx.createPeriodicWave(real, imag, { disableNormalization: false })); }
-                catch { v.osc.setPeriodicWave(this.ctx.createPeriodicWave(real, imag)); }
+                v.oscs.forEach((o) => {
+                    try { o.setPeriodicWave(this.ctx!.createPeriodicWave(real, imag, { disableNormalization: false })); }
+                    catch { o.setPeriodicWave(this.ctx!.createPeriodicWave(real, imag)); }
+                });
             });
         }
     }

@@ -36,6 +36,10 @@ export default function SynthLab() {
     const [filterLfo, setFilterLfo] = useState(0);
     const [tremolo, setTremolo] = useState(0);
     const [noise, setNoise] = useState(0);
+    // Unison
+    const [unisonCount, setUnisonCount] = useState(1);
+    const [unisonDetune, setUnisonDetune] = useState(0);
+    const [stereoSpread, setStereoSpread] = useState(0);
 
     // Filter keytracking
     const [fKeytrack, setFKeytrack] = useState(0);
@@ -121,6 +125,11 @@ export default function SynthLab() {
     useEffect(() => {
         engine.setFilterKeytrack(fKeytrack);
     }, [fKeytrack, engine]);
+    useEffect(() => {
+        engine.setUnisonCount(unisonCount);
+        engine.setUnisonDetune(unisonDetune);
+        engine.setStereoSpread(stereoSpread);
+    }, [engine, unisonCount, unisonDetune, stereoSpread]);
     useEffect(() => {
         engine.setDelay(delayTime, delayFb, delayMix);
     }, [delayTime, delayFb, delayMix, engine]);
@@ -281,6 +290,10 @@ export default function SynthLab() {
                 <Knob label="Vel->Amp" value={velAmp} onChange={setVelAmp} min={0} max={1} step={0.01} format={(v) => `${Math.round(v*100)}%`} />
                 <Knob label="Vel->Filt" value={velFilt} onChange={setVelFilt} min={0} max={1} step={0.01} format={(v) => `${Math.round(v*100)}%`} />
                 <Knob label="Voices" value={maxVoices} onChange={(v)=>setMaxVoices(Math.round(v))} min={1} max={32} step={1} format={(v)=>`${Math.round(v)}`} />
+                {/* Unison */}
+                <Knob label="Unison" value={unisonCount} onChange={(v)=>setUnisonCount(Math.round(v))} min={1} max={7} step={1} format={(v)=>`${Math.round(v)}`} />
+                <Knob label="Detune" value={unisonDetune} onChange={setUnisonDetune} min={0} max={100} step={1} format={(v)=>`${Math.round(v)} c`} />
+                <Knob label="Spread" value={stereoSpread} onChange={setStereoSpread} min={0} max={1} step={0.01} format={(v)=>`${Math.round(v*100)}%`} />
                 <Knob
                     label="Sustain"
                     value={sustain}
@@ -416,6 +429,7 @@ export default function SynthLab() {
                     noise,
                     vel: { amp: velAmp, filt: velFilt },
                     maxVoices,
+                    unison: { count: unisonCount, detune: unisonDetune, spread: stereoSpread },
                     customShape: Array.from(customShape),
                 } as any)}
                 applyPreset={(p: SynthPreset) => {
@@ -442,6 +456,12 @@ export default function SynthLab() {
                     setVelAmp(p.vel?.amp ?? velAmp);
                     setVelFilt(p.vel?.filt ?? velFilt);
                     setMaxVoices(p.maxVoices ?? maxVoices);
+                    const u: any = (p as any).unison;
+                    if (u) {
+                        setUnisonCount(u.count ?? unisonCount);
+                        setUnisonDetune(u.detune ?? unisonDetune);
+                        setStereoSpread(u.spread ?? stereoSpread);
+                    }
                     if (p.customShape && p.customShape.length) setCustomShape(Float32Array.from(p.customShape));
                 }}
             />

@@ -16,6 +16,7 @@ export type SynthPreset = {
   vel: { amp: number; filt: number };
   maxVoices: number;
   customShape?: number[]; // optional
+  unison?: { count: number; detune: number; spread: number };
 };
 
 type Props = {
@@ -103,4 +104,3 @@ export default function PresetPanel({ getPreset, applyPreset }: Props) {
     </div>
   );
 }
-
