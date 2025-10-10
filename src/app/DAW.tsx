@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { AudioEngine } from "@/lib/audio/AudioEngine";
 import PianoRoll, { NoteEvent } from "@/components/PianoRoll";
 import { useRouter } from "next/navigation";
+import { GearIcon } from "@radix-ui/react-icons";
 
 export default function DAW() {
     const router = useRouter();
@@ -87,7 +88,7 @@ export default function DAW() {
 
     return (
         <main className="p-4 sm:p-6 max-w-6xl mx-auto grid gap-4">
-            <header className="flex items-center justify-between">
+            <header className="flex items-center justify-between relative z-20">
                 <h1 className="text-xl font-semibold">Open DAW (alpha)</h1>
                 {/* Settings / plugins */}
                 <PluginMenu onOpenSynth={() => router.push("/synth")} />
@@ -160,10 +161,10 @@ function PluginMenu({ onOpenSynth }: { onOpenSynth: () => void }) {
                 onClick={() => setOpen((v) => !v)}
                 className="p-2 rounded-full border hover:opacity-80"
                 title="Plugins / Settings">
-                <svg width="18" height="18" viewBox="0 0 24 24" className="opacity-80"><path fill="currentColor" d="M12 8a4 4 0 1 0 0 8a4 4 0 0 0 0-8m8.94 4.5a7.94 7.94 0 0 0-.15-1.5l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.96 7.96 0 0 0-2.6-1.5l-.36-2.54A.5.5 0 0 0 12.98 0h-3.96a.5.5 0 0 0-.49.42L8.17 2.96a7.96 7.96 0 0 0-2.6 1.5l-2.39-.96a.5.5 0 0 0-.6.22L.66 7.04a.5.5 0 0 0 .12.64l2.03 1.58a7.94 7.94 0 0 0 0 3l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32c.13.23.39.32.62.23l2.39-.96c.76.64 1.64 1.15 2.6 1.5l.36 2.54c.04.24.25.42.49.42h3.96c.24 0 .45-.18.49-.42l.36-2.54c.96-.35 1.84-.86 2.6-1.5l2.39.96c.23.09.49 0 .62-.23l1.92-3.32a.5.5 0 0 0-.12-.64z"/></svg>
+                <GearIcon className="w-5 h-5 opacity-80" />
             </button>
             {open && (
-                <div className="absolute right-0 mt-2 w-60 border rounded-xl bg-background/80 backdrop-blur p-3 grid gap-2">
+                <div className="absolute right-0 mt-2 w-60 border rounded-xl bg-background/90 backdrop-blur p-3 grid gap-2 z-50 shadow-xl">
                     <div className="text-sm opacity-80">Installed Plugins</div>
                     <button onClick={onOpenSynth} className="text-left px-3 py-2 rounded border hover:opacity-80">
                         Synth Lab
@@ -173,4 +174,3 @@ function PluginMenu({ onOpenSynth }: { onOpenSynth: () => void }) {
         </div>
     );
 }
-

@@ -60,7 +60,7 @@ export default function PianoRoll({
     return (
         <div className="border rounded-xl overflow-hidden">
             {/* Header timeline */}
-            <div className="grid" style={{ gridTemplateColumns: `80px repeat(${steps}, minmax(16px, 1fr))` }}>
+            <div className="grid" style={{ gridTemplateColumns: `80px repeat(${steps}, minmax(32px, 1fr))` }}>
                 <div className="bg-black/20 border-b px-2 py-1 text-xs opacity-70">Keys</div>
                 {Array.from({ length: steps }).map((_, i) => (
                     <div
@@ -107,48 +107,56 @@ function Row({
     const keyName = midiToName(midi);
     const black = isBlack(midi % 12);
     return (
-        <div className="grid relative" style={{ gridTemplateColumns: `80px repeat(${steps}, minmax(16px, 1fr))` }}>
+        <div className="grid relative" style={{ gridTemplateColumns: `80px repeat(${steps}, minmax(32px, 1fr))` }}>
             {/* Key */}
             <button
                 onMouseDown={() => onAudition?.(midi, true)}
                 onMouseUp={() => onAudition?.(midi, false)}
                 onMouseLeave={() => onAudition?.(midi, false)}
-                className={`px-2 text-xs border-r text-left ${black ? "bg-neutral-800" : "bg-neutral-700"}`}
+                className={`px-2 text-xs text-left ${black ? "bg-neutral-800" : "bg-neutral-700"}`}
                 title={`${keyName} (${midi})`}>
                 {keyName}
             </button>
 
             {/* Step cells */}
-            {Array.from({ length: steps }).map((_, col) => (
-                <div
-                    key={col}
-                    className={`h-6 border-t border-l ${
-                        col === steps - 1 ? "border-r" : ""
-                    } ${
-                        black ? "bg-black/20" : "bg-black/10"
-                    } ${
-                        col % 4 === 0 ? "bg-gradient-to-b from-white/5 to-transparent" : ""
-                    } ${
-                        playhead === col ? "outline outline-2 outline-cyan-400/60 -outline-offset-2" : ""
-                    }`}
-                    onClick={() => onCellClick(col)}
-                />
-            ))}
+            {Array.from({ length: steps }).map((_, col) => {
+                const leftBorder = col === 0 ? "border-l-0" : "border-l";
+                return (
+                    <div
+                        key={col}
+                        className={`h-6 border-t ${leftBorder} cursor-pointer transition-colors ${
+                            col === steps - 1 ? "border-r" : ""
+                        } ${
+                            black ? "bg-black/25" : "bg-black/15"
+                        } ${
+                            col % 4 === 0 ? "bg-gradient-to-b from-white/5 to-transparent" : ""
+                        } ${
+                            playhead === col ? "bg-cyan-700/20" : ""
+                        } active:bg-cyan-600/20 hover:bg-white/10`}
+                        onClick={() => onCellClick(col)}
+                    />
+                );
+            })}
 
-            {/* Notes overlay: grid-positioned to span steps. Use z-index via utility. */}
-            {notes.map((n) => (
-                <div
-                    key={n.id}
-                    className="z-10 my-[2px] mx-[1px] rounded-sm bg-cyan-600/50 border border-cyan-300/60"
-                    style={{ gridColumn: `${n.start + 2} / span ${n.duration}` }}
-                    title={`${midiToName(n.pitch)} len ${n.duration}`}
-                    onClick={(e) => {
-                        // allow removing by clicking the note
-                        e.stopPropagation();
-                        onCellClick(n.start);
-                    }}
-                />
-            ))}
+            {/* Absolute overlay with same grid to avoid layout gaps; notes span columns */}
+            <div
+                className="pointer-events-none absolute inset-0 grid z-30"
+                style={{ gridTemplateColumns: `80px repeat(${steps}, minmax(32px, 1fr))` }}>
+                {/* empty cell to align with key column */}
+                <div />
+                {notes.map((n) => (
+                    <div
+                        key={n.id}
+                        className="pointer-events-auto my-[2px] mx-[1px] rounded-sm bg-cyan-500/60 hover:bg-cyan-400/70 active:bg-cyan-300/80 border border-cyan-300/70 shadow-sm transition-colors"
+                        style={{ gridColumn: `${n.start + 2} / span ${n.duration}` }}
+                        title={`${midiToName(n.pitch)} len ${n.duration}`}
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            onCellClick(n.start);
+                        }}
+                    />
+                ))}
+            </div>
         </div>
     );
 }

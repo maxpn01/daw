@@ -1,8 +1,9 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { AudioEngine, Wave } from "@/lib/audio/AudioEngine";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import type { ChangeEvent } from "react";
+import { AudioEngine, Wave, INSTRUMENT_OPTIONS, InstrumentId } from "@/lib/audio/AudioEngine";
 import { Visualizer } from "@/components/Visualizer";
 import Knob from "@/components/Knob";
 import LogKnob from "@/components/LogKnob";
@@ -16,6 +17,14 @@ export default function SynthLab() {
 
     const [ready, setReady] = useState(false);
     const [running, setRunning] = useState(false);
+    const [instrument, setInstrument] = useState<InstrumentId>("piano");
+    const [userInstruments, setUserInstruments] = useState<Array<{ id: InstrumentId; label: string }>>([]);
+    const [instrumentLoading, setInstrumentLoading] = useState(false);
+    const [instrumentError, setInstrumentError] = useState<string>("");
+    const [customRoot, setCustomRoot] = useState(60);
+    const isSynth = instrument === "synth";
+    const keyboardBase = instrument === "drums" ? 36 : instrument === "bass" ? 36 : 48;
+    const keyboardOctaves = instrument === "drums" ? 1 : 2;
 
     // synth params
     const [wave, setWave] = useState<Wave>("sine");
@@ -70,6 +79,24 @@ export default function SynthLab() {
         // Keep engine in sync when params change
         engine.setWave(wave);
     }, [wave, engine]);
+
+    useEffect(() => {
+        let cancelled = false;
+        setInstrumentLoading(true);
+        setInstrumentError("");
+        engine
+            .setInstrument(instrument)
+            .catch((err: unknown) => {
+                console.error(err);
+                if (!cancelled) setInstrumentError(err instanceof Error ? err.message : "Failed to load instrument");
+            })
+            .finally(() => {
+                if (!cancelled) setInstrumentLoading(false);
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [engine, instrument]);
 
     useEffect(() => {
         engine.setFrequency(freq);
@@ -178,6 +205,40 @@ export default function SynthLab() {
         }
     };
 
+    const handleInstrumentFile = useCallback(
+        async (files: FileList | null) => {
+            if (!files || !files.length) return;
+            const file = files[0];
+            try {
+                setInstrumentLoading(true);
+                setInstrumentError("");
+                const buffer = await file.arrayBuffer();
+                const id = await engine.addUserInstrument(buffer, customRoot);
+                const baseLabel = file.name.replace(/\.[^/.]+$/, "");
+                setUserInstruments((prev) => {
+                    const label = baseLabel || `User Sample ${prev.length + 1}`;
+                    return [...prev, { id, label }];
+                });
+                setInstrument(id);
+            } catch (err) {
+                console.error(err);
+                setInstrumentError(err instanceof Error ? err.message : "Unable to import sample");
+            } finally {
+                setInstrumentLoading(false);
+            }
+        },
+        [engine, customRoot]
+    );
+
+    const onCustomFileChange = useCallback(
+        (event: ChangeEvent<HTMLInputElement>) => {
+            const files = event.target.files;
+            void handleInstrumentFile(files);
+            event.target.value = "";
+        },
+        [handleInstrumentFile]
+    );
+
     const startRec = async () => {
         await engine.resume();
         setReady(true);
@@ -221,20 +282,66 @@ export default function SynthLab() {
                 <div className="text-xs opacity-70">{ready ? "Audio ready" : "Click Start to init audio"}</div>
             </div>
 
+            {/* Instrument select */}
+            <div className="flex flex-col gap-1">
+                <div className="flex flex-wrap items-center gap-3">
+                    <span className="text-sm opacity-80">Instrument:</span>
+                    <select
+                        value={instrument}
+                        onChange={(e) => setInstrument(e.target.value as InstrumentId)}
+                        className="border rounded px-2 pr-8 py-1.5 text-sm select-reset min-w-[10rem]">
+                        {INSTRUMENT_OPTIONS.map((opt) => (
+                            <option key={opt.id} value={opt.id}>
+                                {opt.label}
+                            </option>
+                        ))}
+                        {userInstruments.map((opt) => (
+                            <option key={opt.id} value={opt.id}>
+                                {opt.label}
+                            </option>
+                        ))}
+                    </select>
+                    <label className="flex items-center gap-1 text-xs opacity-80">
+                        <span>Root note</span>
+                        <input
+                            type="number"
+                            min={0}
+                            max={127}
+                            value={customRoot}
+                            onChange={(e) => {
+                                const num = Number(e.target.value);
+                                if (Number.isFinite(num)) {
+                                    setCustomRoot(Math.max(0, Math.min(127, Math.round(num))));
+                                }
+                            }}
+                            className="w-16 border rounded px-1 py-0.5 text-xs bg-transparent"
+                        />
+                    </label>
+                    <label className="text-xs border rounded px-2 py-1 cursor-pointer hover:opacity-80">
+                        <input type="file" accept=".wav,audio/wav,audio/*" onChange={onCustomFileChange} className="hidden" />
+                        Add sample
+                    </label>
+                    {instrumentLoading && <span className="text-xs opacity-60">Loading…</span>}
+                </div>
+                {!!instrumentError && <span className="text-xs text-red-300">{instrumentError}</span>}
+            </div>
+
             {/* Waveform select */}
             <div className="flex items-center gap-2 flex-wrap">
                 <span className="text-sm opacity-80">Wave:</span>
                 {["sine", "square", "sawtooth", "triangle", "custom"].map((w) => (
                     <button
                         key={w}
-                        onClick={() => setWave(w as Wave)}
+                        onClick={() => isSynth && setWave(w as Wave)}
+                        disabled={!isSynth}
                         className={`px-3 py-1 rounded-full border text-sm ${
                             wave === w ? "bg-cyan-600/20 border-cyan-400" : "hover:opacity-80"
-                        }`}>
+                        } ${!isSynth ? "opacity-40 cursor-not-allowed" : ""}`}>
                         {w}
                     </button>
                 ))}
             </div>
+            {!isSynth && <span className="text-xs opacity-60">Wave controls are available for the synth engine.</span>}
 
             {/* Knobs */}
             <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-4">
@@ -556,9 +663,12 @@ export default function SynthLab() {
             <div className="grid gap-2">
                 <div className="text-sm opacity-80">Keyboard (click or use QWERTY: Z row = C3, Q row = C4)</div>
                 <Keyboard
-                    baseNote={48}
-                    octaves={2}
-                    onNoteOn={(n, v, id) => engine.noteOn(n, v ?? 1, id ?? n)}
+                    baseNote={keyboardBase}
+                    octaves={keyboardOctaves}
+                    onNoteOn={(n, v, id) => {
+                        if (instrumentLoading) return;
+                        engine.noteOn(n, v ?? 1, id ?? n);
+                    }}
                     onNoteOff={(id) => engine.noteOff(id)}
                 />
             </div>

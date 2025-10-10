@@ -1,6 +1,75 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 // src/lib/audio/AudioEngine.ts
 export type Wave = "sine" | "square" | "sawtooth" | "triangle" | "custom";
+export type BuiltInInstrumentId = "synth" | "piano" | "guitar" | "organ" | "bass" | "drums";
+export type InstrumentId = BuiltInInstrumentId | `user-${string}`;
+
+export const INSTRUMENT_OPTIONS: Array<{ id: BuiltInInstrumentId; label: string }> = [
+    { id: "synth", label: "Synth Engine" },
+    { id: "piano", label: "Piano" },
+    { id: "guitar", label: "Guitar" },
+    { id: "organ", label: "Organ" },
+    { id: "bass", label: "Bass" },
+    { id: "drums", label: "Drum Kit" },
+];
+
+type SynthVoice = {
+    kind: "synth";
+    oscs: OscillatorNode[];
+    gain: GainNode;
+    startedAt: number;
+    freq: number;
+    filter?: BiquadFilterNode;
+    panners?: StereoPannerNode[];
+};
+
+type SampleVoice = {
+    kind: "sample";
+    source: AudioBufferSourceNode;
+    gain: GainNode;
+    startedAt: number;
+    freq: number;
+    filter?: BiquadFilterNode;
+};
+
+type DrumVoice = {
+    kind: "drum";
+    source: AudioBufferSourceNode;
+    gain: GainNode;
+    startedAt: number;
+    freq: number;
+    filter?: BiquadFilterNode;
+};
+
+type VoiceState = SynthVoice | SampleVoice | DrumVoice;
+
+type SampleInstrumentDefinition = { kind: "sample"; src: string; rootNote: number; buffer?: AudioBuffer };
+type DrumKitDefinition = { kind: "drumkit"; mapping: Record<number, string>; fallback: string };
+type InstrumentDefinition =
+    | { kind: "engine" }
+    | SampleInstrumentDefinition
+    | DrumKitDefinition;
+
+const BASE_INSTRUMENT_LIBRARY: Record<BuiltInInstrumentId, InstrumentDefinition> = {
+    synth: { kind: "engine" },
+    piano: { kind: "sample", src: "/samples/instruments/piano-c4.wav", rootNote: 60 },
+    guitar: { kind: "sample", src: "/samples/instruments/guitar-c4.wav", rootNote: 60 },
+    organ: { kind: "sample", src: "/samples/instruments/organ-c4.wav", rootNote: 60 },
+    bass: { kind: "sample", src: "/samples/instruments/bass-c2.wav", rootNote: 36 },
+    drums: {
+        kind: "drumkit",
+        mapping: {
+            36: "/samples/instruments/drum-kick.wav",
+            37: "/samples/instruments/drum-snare.wav",
+            38: "/samples/instruments/drum-snare.wav",
+            40: "/samples/instruments/drum-snare.wav",
+            42: "/samples/instruments/drum-hihat.wav",
+            44: "/samples/instruments/drum-hihat.wav",
+            46: "/samples/instruments/drum-hihat.wav",
+        },
+        fallback: "/samples/instruments/drum-hihat.wav",
+    },
+};
 
 export class AudioEngine {
     ctx?: AudioContext;
@@ -16,7 +85,7 @@ export class AudioEngine {
     private customSamples?: Float32Array;
 
     // Polyphony
-    private voices: Map<string | number, { oscs: OscillatorNode[]; gain: GainNode; startedAt: number; freq: number; filter?: BiquadFilterNode; panners?: StereoPannerNode[] } > = new Map();
+    private voices: Map<string | number, VoiceState> = new Map();
 
     // LFO
     private lfoOsc?: OscillatorNode;
@@ -41,6 +110,7 @@ export class AudioEngine {
     private filterQ = 0.8;
     private distAmount = 0; // 0..1
     private adsr = { attack: 0.01, decay: 0.1, sustain: 0.8, release: 0.2 };
+    private currentInstrument: InstrumentId = "synth";
 
     // Filter envelope (global)
     private fenv = { attack: 0.005, decay: 0.2, sustain: 0.0, release: 0.2, amountHz: 0 };
@@ -78,6 +148,13 @@ export class AudioEngine {
     private reverbSend?: GainNode;
     private reverbMix = 0; // send level 0..1
     private reverbSize = 2.0; // seconds
+
+    // Samples
+    private instrumentDefs: Map<string, InstrumentDefinition> = new Map(
+        Object.entries(BASE_INSTRUMENT_LIBRARY)
+    );
+    private sampleCache: Map<string, AudioBuffer> = new Map();
+    private instrumentReady?: Promise<void>;
 
     private ensureContext() {
         if (this.ctx) return;
@@ -182,6 +259,61 @@ export class AudioEngine {
         }
     }
 
+    async setInstrument(id: InstrumentId) {
+        this.currentInstrument = id;
+        this.allNotesOff();
+        const def = this.instrumentDefs.get(id);
+        if (!def) return;
+        if (def.kind === "engine") {
+            this.instrumentReady = undefined;
+            return;
+        }
+        const promise = this.loadInstrument(def);
+        this.instrumentReady = promise;
+        await promise;
+        if (this.instrumentReady === promise) this.instrumentReady = undefined;
+    }
+
+    private async loadInstrument(def: InstrumentDefinition) {
+        this.ensureContext();
+        if (!this.ctx) return;
+        if (def.kind === "sample") {
+            if (def.buffer) this.sampleCache.set(def.src, def.buffer);
+            else await this.loadSample(def.src);
+            return;
+        }
+        if (def.kind === "drumkit") {
+            const paths = Array.from(new Set([...Object.values(def.mapping), def.fallback]));
+            await Promise.all(paths.map((p) => this.loadSample(p)));
+        }
+    }
+
+    async addUserInstrument(data: ArrayBuffer, rootNote = 60): Promise<InstrumentId> {
+        this.ensureContext();
+        if (!this.ctx) throw new Error("AudioContext not ready");
+        const copy = data.slice(0);
+        const buffer = await this.ctx.decodeAudioData(copy);
+        const id: InstrumentId = `user-${Date.now().toString(16)}-${Math.floor(Math.random() * 1e6)}`;
+        const key = `user:${id}`;
+        const def: SampleInstrumentDefinition = { kind: "sample", src: key, rootNote, buffer };
+        this.instrumentDefs.set(id, def);
+        this.sampleCache.set(key, buffer);
+        return id;
+    }
+
+    private async loadSample(path: string) {
+        if (this.sampleCache.has(path)) return this.sampleCache.get(path)!;
+        if (typeof window === "undefined") throw new Error("No window");
+        const res = await fetch(path);
+        if (!res.ok) throw new Error(`Failed to load sample ${path} (${res.status})`);
+        const arrayBuffer = await res.arrayBuffer();
+        this.ensureContext();
+        if (!this.ctx) throw new Error("AudioContext not ready");
+        const buffer = await this.ctx.decodeAudioData(arrayBuffer);
+        this.sampleCache.set(path, buffer);
+        return buffer;
+    }
+
     setFrequency(freq: number) {
         this.currentFreq = freq;
         if (this.osc && this.ctx) this.osc.frequency.setValueAtTime(freq, this.ctx.currentTime);
@@ -273,9 +405,11 @@ export class AudioEngine {
         if (this.lfoGainPitch) this.lfoGainPitch.gain.value = this.vibratoCents;
         // reconnect to active oscillators
         this.voices.forEach((v) => {
-            const arr = v.oscs ?? [];
-            arr.forEach((o) => {
-                try { this.lfoGainPitch!.disconnect(o.detune); } catch {}
+            if (v.kind !== "synth") return;
+            v.oscs.forEach((o) => {
+                try {
+                    this.lfoGainPitch!.disconnect(o.detune);
+                } catch {}
                 this.lfoGainPitch!.connect(o.detune);
             });
         });
@@ -347,7 +481,8 @@ export class AudioEngine {
         // connect LFO pitch
         if (this.lfoGainPitch) this.lfoGainPitch.connect(osc.detune);
         // Store as a voice under key 'drone'
-        this.voices.set("drone", { oscs: [osc], gain: gnode, startedAt: now, freq });
+        const droneVoice: SynthVoice = { kind: "synth", oscs: [osc], gain: gnode, startedAt: now, freq };
+        this.voices.set("drone", droneVoice);
         // For envelope on drone
         osc.start();
 
@@ -401,52 +536,74 @@ export class AudioEngine {
 
     noteOn(noteNumber: number, velocity = 1, id: number | string = noteNumber) {
         this.ensureContext();
-        const now = this.ctx!.currentTime;
-        if (this.voices.has(id)) return; // already playing
-
-        // Voice stealing
-        if (this.voices.size >= this.maxVoices) {
-            let oldestKey: string | number | undefined;
-            let oldestTime = Number.POSITIVE_INFINITY;
-            this.voices.forEach((v, key) => {
-                if (key === "drone") return;
-                if (v.startedAt < oldestTime) { oldestTime = v.startedAt; oldestKey = key; }
-            });
-            if (oldestKey !== undefined) this.noteOff(oldestKey);
+        if (!this.ctx) return;
+        if (this.instrumentReady) {
+            this.instrumentReady.then(() => this.noteOn(noteNumber, velocity, id));
+            return;
         }
+        const def = this.instrumentDefs.get(this.currentInstrument) ?? BASE_INSTRUMENT_LIBRARY.synth;
+        const isDrum = def.kind === "drumkit";
+        if (!isDrum && this.voices.has(id)) return;
+        if (!isDrum) this.enforceVoiceLimit();
+        if (def.kind === "engine") {
+            this.noteOnSynth(noteNumber, velocity, id);
+        } else if (def.kind === "sample") {
+            this.noteOnSample(def, noteNumber, velocity, id);
+        } else {
+            this.noteOnDrum(def, noteNumber, velocity, id);
+        }
+    }
 
+    private enforceVoiceLimit() {
+        if (this.voices.size < this.maxVoices) return;
+        let oldestKey: string | number | undefined;
+        let oldestTime = Number.POSITIVE_INFINITY;
+        this.voices.forEach((v, key) => {
+            if (key === "drone") return;
+            if (v.startedAt < oldestTime) {
+                oldestTime = v.startedAt;
+                oldestKey = key;
+            }
+        });
+        if (oldestKey !== undefined) this.noteOff(oldestKey);
+    }
+
+    private noteOnSynth(noteNumber: number, velocity: number, id: number | string) {
+        if (!this.ctx || !this.mixGain) return;
+        const now = this.ctx.currentTime;
         const freq = 440 * Math.pow(2, (noteNumber - 69) / 12);
-        const vGain = this.ctx!.createGain();
+        const vGain = this.ctx.createGain();
         vGain.gain.value = 0;
-        // Per-voice filter
-        const vFilter = this.ctx!.createBiquadFilter();
-        vFilter.type = 'lowpass';
+        const vFilter = this.ctx.createBiquadFilter();
+        vFilter.type = "lowpass";
         vFilter.Q.value = this.filterQ;
         const baseCut = this.computeKeytrackedCutoff(freq);
         vFilter.frequency.value = baseCut;
         vFilter.connect(vGain);
-        vGain.connect(this.mixGain!);
+        vGain.connect(this.mixGain);
         const oscs: OscillatorNode[] = [];
         const pans: StereoPannerNode[] = [];
         const n = this.unisonCount;
         for (let i = 0; i < n; i++) {
-            const osc = this.ctx!.createOscillator();
+            const osc = this.ctx.createOscillator();
             if (this.currentWave === "custom" && this.customSamples) {
-                const { real, imag } = this.buildPeriodicForFreq(this.customSamples, freq, this.ctx!.sampleRate);
-                try { osc.setPeriodicWave(this.ctx!.createPeriodicWave(real, imag, { disableNormalization: false })); }
-                catch { osc.setPeriodicWave(this.ctx!.createPeriodicWave(real, imag)); }
+                const { real, imag } = this.buildPeriodicForFreq(this.customSamples, freq, this.ctx.sampleRate);
+                try {
+                    osc.setPeriodicWave(this.ctx.createPeriodicWave(real, imag, { disableNormalization: false }));
+                } catch {
+                    osc.setPeriodicWave(this.ctx.createPeriodicWave(real, imag));
+                }
             } else {
                 osc.type = this.currentWave as OscillatorType;
             }
             osc.frequency.setValueAtTime(freq, now);
-            const pos = n === 1 ? 0 : (i / (n - 1)) * 2 - 1; // -1..1
+            const pos = n === 1 ? 0 : (i / (n - 1)) * 2 - 1;
             const cents = pos * this.unisonDetune;
             osc.detune.setValueAtTime(cents, now);
-            const pan = this.ctx!.createStereoPanner();
+            const pan = this.ctx.createStereoPanner();
             pan.pan.value = pos * this.stereoSpread;
-            const oGain = this.ctx!.createGain();
+            const oGain = this.ctx.createGain();
             oGain.gain.value = 1 / Math.sqrt(n);
-            // chain: osc -> oGain -> pan -> vFilter
             osc.connect(oGain);
             oGain.connect(pan);
             pan.connect(vFilter);
@@ -455,7 +612,6 @@ export class AudioEngine {
             oscs.push(osc);
             pans.push(pan);
         }
-        // ADSR gate on
         const g = vGain.gain;
         const { attack, decay, sustain } = this.adsr;
         g.cancelScheduledValues(now);
@@ -463,10 +619,80 @@ export class AudioEngine {
         const peak = this.lerp(1, velocity, this.ampVelSense);
         g.linearRampToValueAtTime(peak, now + Math.max(0.001, attack));
         g.linearRampToValueAtTime(peak * sustain, now + Math.max(0.001, attack) + Math.max(0.001, decay));
-        this.voices.set(id, { oscs, gain: vGain, startedAt: now, freq, filter: vFilter, panners: pans });
-
-        // Filter envelope per voice
+        const voice: SynthVoice = { kind: "synth", oscs, gain: vGain, startedAt: now, freq, filter: vFilter, panners: pans };
+        this.voices.set(id, voice);
         this.triggerFilterEnvOn(vFilter.frequency, now, this.lerp(1, velocity, this.filtVelSense), baseCut);
+    }
+
+    private noteOnSample(def: SampleInstrumentDefinition, noteNumber: number, velocity: number, id: number | string) {
+        if (!this.ctx || !this.mixGain) return;
+        let buffer = this.sampleCache.get(def.src);
+        if (!buffer && def.buffer) {
+            buffer = def.buffer;
+            this.sampleCache.set(def.src, buffer);
+        }
+        if (!buffer) {
+            this.loadSample(def.src).then(() => this.noteOnSample(def, noteNumber, velocity, id));
+            return;
+        }
+        const now = this.ctx.currentTime;
+        const freq = 440 * Math.pow(2, (noteNumber - 69) / 12);
+        const src = this.ctx.createBufferSource();
+        src.buffer = buffer;
+        const semis = noteNumber - def.rootNote;
+        src.playbackRate.value = Math.pow(2, semis / 12);
+        const vFilter = this.ctx.createBiquadFilter();
+        vFilter.type = "lowpass";
+        vFilter.Q.value = this.filterQ;
+        const baseCut = this.computeKeytrackedCutoff(freq);
+        vFilter.frequency.value = baseCut;
+        const gain = this.ctx.createGain();
+        const peak = this.lerp(1, velocity, this.ampVelSense);
+        gain.gain.setValueAtTime(0, now);
+        gain.gain.linearRampToValueAtTime(peak, now + 0.01);
+        src.connect(vFilter);
+        vFilter.connect(gain);
+        gain.connect(this.mixGain);
+        const voice: SampleVoice = { kind: "sample", source: src, gain, startedAt: now, freq, filter: vFilter };
+        this.voices.set(id, voice);
+        src.onended = () => {
+            const existing = this.voices.get(id);
+            if (existing && existing === voice) this.voices.delete(id);
+            const endNow = this.ctx?.currentTime ?? now;
+            this.releaseFilterEnvOn(vFilter.frequency, endNow, this.computeKeytrackedCutoff(freq));
+            try { src.disconnect(); } catch {}
+            try { vFilter.disconnect(); } catch {}
+            try { gain.disconnect(); } catch {}
+        };
+        this.triggerFilterEnvOn(vFilter.frequency, now, this.lerp(1, velocity, this.filtVelSense), baseCut);
+        src.start(now);
+    }
+
+    private noteOnDrum(def: DrumKitDefinition, noteNumber: number, velocity: number, id: number | string) {
+        if (!this.ctx || !this.mixGain) return;
+        const path = def.mapping[noteNumber] ?? def.fallback;
+        const buffer = this.sampleCache.get(path);
+        if (!buffer) {
+            this.loadSample(path).then(() => this.noteOnDrum(def, noteNumber, velocity, id));
+            return;
+        }
+        const now = this.ctx.currentTime;
+        const src = this.ctx.createBufferSource();
+        src.buffer = buffer;
+        const gain = this.ctx.createGain();
+        const peak = this.lerp(0.2, velocity, this.ampVelSense);
+        gain.gain.value = peak;
+        src.connect(gain);
+        gain.connect(this.mixGain);
+        const voiceKey = `${id}-${now.toFixed(6)}`;
+        const voice: DrumVoice = { kind: "drum", source: src, gain, startedAt: now, freq: 0 };
+        this.voices.set(voiceKey, voice);
+        src.onended = () => {
+            this.voices.delete(voiceKey);
+            try { src.disconnect(); } catch {}
+            try { gain.disconnect(); } catch {}
+        };
+        src.start(now);
     }
 
     noteOff(id: number | string) {
@@ -475,22 +701,43 @@ export class AudioEngine {
         if (!voice) return;
         const now = this.ctx.currentTime;
         const { release } = this.adsr;
-        voice.gain.gain.cancelScheduledValues(now);
-        const current = voice.gain.gain.value;
-        voice.gain.gain.setValueAtTime(current, now);
-        voice.gain.gain.linearRampToValueAtTime(0, now + Math.max(0.001, release));
-        const oscs = voice.oscs;
-        this.voices.delete(id);
-        try { oscs.forEach((o) => o.stop(now + Math.max(0.001, release) + 0.01)); } catch {}
-        setTimeout(() => {
-            try { oscs.forEach((o) => o.disconnect()); } catch {}
-            try { voice.panners?.forEach((p) => p.disconnect()); } catch {}
-            try { voice.filter?.disconnect(); } catch {}
-            try { voice.gain.disconnect(); } catch {}
-        }, (Math.max(0.001, release) + 0.05) * 1000);
+        if (voice.kind === "synth") {
+            voice.gain.gain.cancelScheduledValues(now);
+            const current = voice.gain.gain.value;
+            voice.gain.gain.setValueAtTime(current, now);
+            voice.gain.gain.linearRampToValueAtTime(0, now + Math.max(0.001, release));
+            const oscs = voice.oscs;
+            this.voices.delete(id);
+            try { oscs.forEach((o) => o.stop(now + Math.max(0.001, release) + 0.01)); } catch {}
+            setTimeout(() => {
+                try { oscs.forEach((o) => o.disconnect()); } catch {}
+                try { voice.panners?.forEach((p) => p.disconnect()); } catch {}
+                try { voice.filter?.disconnect(); } catch {}
+                try { voice.gain.disconnect(); } catch {}
+            }, (Math.max(0.001, release) + 0.05) * 1000);
+        } else if (voice.kind === "sample") {
+            voice.gain.gain.cancelScheduledValues(now);
+            const current = voice.gain.gain.value;
+            voice.gain.gain.setValueAtTime(current, now);
+            voice.gain.gain.linearRampToValueAtTime(0, now + Math.max(0.001, release));
+            this.voices.delete(id);
+            try { voice.source.stop(now + Math.max(0.001, release) + 0.01); } catch {}
+            setTimeout(() => {
+                try { voice.source.disconnect(); } catch {}
+                try { voice.filter?.disconnect(); } catch {}
+                try { voice.gain.disconnect(); } catch {}
+            }, (Math.max(0.001, release) + 0.05) * 1000);
+        } else {
+            // Drum voices are one-shots; stop immediately
+            this.voices.delete(id);
+            try { voice.source.stop(); } catch {}
+            setTimeout(() => {
+                try { voice.source.disconnect(); } catch {}
+                try { voice.gain.disconnect(); } catch {}
+            }, 50);
+        }
 
-        // Per-voice filter return
-        if (voice.filter) this.releaseFilterEnvOn(voice.filter.frequency, now, this.computeKeytrackedCutoff(voice.freq));
+        if (voice.filter) this.releaseFilterEnvOn(voice.filter.frequency, now, this.computeKeytrackedCutoff(voice.freq || this.currentFreq));
         else this.releaseFilterEnv(now);
     }
 
@@ -522,8 +769,6 @@ export class AudioEngine {
                 this.recorderNode = node;
                 this.master!.connect(node);
             };
-            // fire and forget
-            // eslint-disable-next-line @typescript-eslint/no-floating-promises
             start();
             this.recMode = "wav";
             return { mode: "wav", mimeType: "audio/wav" };
@@ -744,6 +989,7 @@ export class AudioEngine {
             }
             this.voices.forEach((v, key) => {
                 if (key === "drone") return;
+                if (v.kind !== "synth") return;
                 const f = v.freq || this.currentFreq;
                 const { real, imag } = this.buildPeriodicForFreq(s, f, sr);
                 v.oscs.forEach((o) => {
