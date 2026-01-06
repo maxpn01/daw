@@ -30,7 +30,7 @@ const buildKeyRange = (startMidi: number, endMidi: number) => {
     return { whiteKeys, blackKeys };
 };
 
-const { whiteKeys: WHITE_KEYS, blackKeys: BLACK_KEYS } = buildKeyRange(48, 83);
+const { whiteKeys: WHITE_KEYS, blackKeys: BLACK_KEYS } = buildKeyRange(36, 95);
 
 const KEYBOARD_MAP: Record<string, number> = {
     z: 48,
