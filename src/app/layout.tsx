@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-    title: "Synth",
-    description: "Playground for sound synthesis and visualization",
+    title: "DAW",
+    description: "Playground for music",
 };
 
 export default function RootLayout({

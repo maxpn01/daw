@@ -1,176 +1,285 @@
 "use client";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { AudioEngine } from "@/lib/audio/AudioEngine";
-import PianoRoll, { NoteEvent } from "@/components/PianoRoll";
-import { useRouter } from "next/navigation";
-import { GearIcon } from "@radix-ui/react-icons";
+
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import "./DAW.scss";
+
+const PLAYER_SCRIPT = "https://surikov.github.io/webaudiofont/npm/dist/WebAudioFontPlayer.js";
+const INSTRUMENT_NAME = "_tone_0000_Chaos_sf2_file";
+const INSTRUMENT_SCRIPT = "https://surikov.github.io/webaudiofontdata/sound/0000_Chaos_sf2_file.js";
+const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+
+const buildKeyRange = (startMidi: number, endMidi: number) => {
+    const whiteKeys: { label: string; midi: number }[] = [];
+    const blackKeys: { label: string; midi: number; between: number }[] = [];
+    let whiteIndex = -1;
+
+    for (let midi = startMidi; midi <= endMidi; midi += 1) {
+        const note = NOTE_NAMES[midi % 12];
+        const octave = Math.floor(midi / 12) - 1;
+        const label = `${note}${octave}`;
+        const isBlack = note.includes("#");
+
+        if (isBlack) {
+            blackKeys.push({ label, midi, between: whiteIndex });
+        } else {
+            whiteIndex += 1;
+            whiteKeys.push({ label, midi });
+        }
+    }
+
+    return { whiteKeys, blackKeys };
+};
+
+const { whiteKeys: WHITE_KEYS, blackKeys: BLACK_KEYS } = buildKeyRange(48, 83);
+
+const KEYBOARD_MAP: Record<string, number> = {
+    z: 48,
+    x: 50,
+    c: 52,
+    v: 53,
+    b: 55,
+    n: 57,
+    m: 59,
+    a: 60,
+    w: 61,
+    s: 62,
+    e: 63,
+    d: 64,
+    f: 65,
+    t: 66,
+    g: 67,
+    y: 68,
+    h: 69,
+    u: 70,
+    j: 71,
+    k: 72,
+    o: 73,
+    l: 74,
+    p: 75,
+    ";": 76,
+    "'": 77,
+};
 
 export default function DAW() {
-    const router = useRouter();
-    const engine = useMemo(() => new AudioEngine(), []);
+    const audioContextRef = useRef<AudioContext | null>(null);
+    const playerRef = useRef<InstanceType<NonNullable<Window["WebAudioFontPlayer"]>> | null>(null);
+    const instrumentRef = useRef<unknown | null>(null);
+    const instrumentLoadRequestedRef = useRef(false);
+    const pressedKeysRef = useRef(new Set<string>());
+    const scriptPromisesRef = useRef(new Map<string, Promise<void>>());
+    const [activeNotes, setActiveNotes] = useState<Set<number>>(() => new Set());
 
-    const [tempo, setTempo] = useState(120);
-    const [isPlaying, setIsPlaying] = useState(false);
-    const [playhead, setPlayhead] = useState<number | null>(null);
-    const [notes, setNotes] = useState<NoteEvent[]>([]);
-    const [noteLen, setNoteLen] = useState(1); // in steps
+    const blackKeyLayout = useMemo(() => {
+        const whiteWidth = 100 / WHITE_KEYS.length;
+        const blackWidth = whiteWidth * 0.6;
+        return BLACK_KEYS.map((key) => ({
+            ...key,
+            width: `${blackWidth}%`,
+            left: `calc(${(key.between + 1) * whiteWidth}% - ${blackWidth / 2}%)`,
+        }));
+    }, []);
 
-    // Grid config
-    const steps = 32; // 2 bars of 16th notes
-    const startMidi = 48; // C3
-    const endMidi = 72; // C5 (exclusive upper bound handled inside PianoRoll)
+    const activateNote = useCallback((midi: number) => {
+        setActiveNotes((prev) => {
+            if (prev.has(midi)) return prev;
+            const next = new Set(prev);
+            next.add(midi);
+            return next;
+        });
+    }, []);
 
-    const timerRef = useRef<number | null>(null);
-    const nextStepRef = useRef(0);
+    const deactivateNote = useCallback((midi: number) => {
+        setActiveNotes((prev) => {
+            if (!prev.has(midi)) return prev;
+            const next = new Set(prev);
+            next.delete(midi);
+            return next;
+        });
+    }, []);
+
+    const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    const loadScript = useCallback((src: string, readyCheck: () => boolean) => {
+        if (readyCheck()) return Promise.resolve();
+        const cached = scriptPromisesRef.current.get(src);
+        if (cached) return cached;
+
+        const promise = new Promise<void>((resolve, reject) => {
+            const existing = document.querySelector<HTMLScriptElement>(`script[src="${src}"]`);
+            if (existing) {
+                existing.addEventListener("load", () => resolve(), { once: true });
+                existing.addEventListener("error", () => reject(new Error(`Failed to load ${src}`)), { once: true });
+                return;
+            }
+            const script = document.createElement("script");
+            script.src = src;
+            script.async = true;
+            script.onload = () => resolve();
+            script.onerror = () => reject(new Error(`Failed to load ${src}`));
+            document.head.appendChild(script);
+        });
+
+        scriptPromisesRef.current.set(src, promise);
+        return promise;
+    }, []);
+
+    const waitForInstrumentReady = useCallback(async () => {
+        const player = playerRef.current;
+        if (!player) return false;
+        const start = performance.now();
+        const timeout = 5000;
+        while (!player.loader.loaded(INSTRUMENT_NAME)) {
+            if (performance.now() - start > timeout) return false;
+            await wait(50);
+        }
+        return true;
+    }, []);
+
+    const ensureAudio = useCallback(async () => {
+        if (typeof window === "undefined") return null;
+        await loadScript(PLAYER_SCRIPT, () => Boolean(window.WebAudioFontPlayer));
+        await loadScript(INSTRUMENT_SCRIPT, () =>
+            Boolean((window as Window & Record<string, unknown>)[INSTRUMENT_NAME])
+        );
+        if (!audioContextRef.current) {
+            const AudioContextImpl = window.AudioContext || window.webkitAudioContext;
+            if (!AudioContextImpl) return null;
+            audioContextRef.current = new AudioContextImpl();
+        }
+        if (audioContextRef.current.state === "suspended") {
+            await audioContextRef.current.resume();
+        }
+        if (!playerRef.current && window.WebAudioFontPlayer) {
+            playerRef.current = new window.WebAudioFontPlayer();
+        }
+        if (playerRef.current && !instrumentLoadRequestedRef.current) {
+            playerRef.current.loader.decodeAfterLoading(audioContextRef.current, INSTRUMENT_NAME);
+            instrumentLoadRequestedRef.current = true;
+        }
+
+        if (!instrumentRef.current) {
+            const loadedInstrument = (window as Window & Record<string, unknown>)[INSTRUMENT_NAME];
+            if (loadedInstrument) {
+                instrumentRef.current = loadedInstrument;
+            }
+        }
+
+        const instrumentReady = await waitForInstrumentReady();
+        if (!instrumentRef.current && instrumentReady) {
+            const loadedInstrument = (window as Window & Record<string, unknown>)[INSTRUMENT_NAME];
+            if (loadedInstrument) {
+                instrumentRef.current = loadedInstrument;
+            }
+        }
+        if (!playerRef.current || !instrumentRef.current) return null;
+        return { ac: audioContextRef.current, player: playerRef.current, instrument: instrumentRef.current };
+    }, [loadScript, waitForInstrumentReady]);
 
     useEffect(() => {
-        return () => {
-            if (timerRef.current) window.clearInterval(timerRef.current);
-            engine.allNotesOff();
-        };
-    }, [engine]);
+        void loadScript(PLAYER_SCRIPT, () => Boolean(window.WebAudioFontPlayer));
+        void loadScript(INSTRUMENT_SCRIPT, () =>
+            Boolean((window as Window & Record<string, unknown>)[INSTRUMENT_NAME])
+        );
+    }, [loadScript]);
 
-    const start = async () => {
-        await engine.resume();
-        engine.setMasterGain(0.5);
-        setIsPlaying(true);
-        setPlayhead(0);
-        nextStepRef.current = 0;
-        const stepMs = (60_000 / tempo) / 4; // 16th notes
-        // simple step scheduler
-        timerRef.current = window.setInterval(() => {
-            const step = nextStepRef.current % steps;
-            setPlayhead(step);
-            // trigger any notes starting at this step
-            const starts = notes.filter((n) => (n.start % steps) === step);
-            const nowTag = Date.now().toString(36);
-            for (const n of starts) {
-                const id = `daw:${n.id}:${nowTag}`;
-                engine.noteOn(n.pitch, 0.9, id);
-                const offDelay = Math.max(1, n.duration) * stepMs;
-                window.setTimeout(() => engine.noteOff(id), offDelay);
+    const playNote = useCallback(
+        async (midi: number) => {
+            try {
+                const audio = await ensureAudio();
+                if (!audio) return;
+                audio.player.queueWaveTable(
+                    audio.ac,
+                    audio.ac.destination,
+                    audio.instrument,
+                    audio.ac.currentTime,
+                    midi,
+                    1.4,
+                    0.45
+                );
+            } catch (error) {
+                console.error("Unable to play note", error);
             }
-            nextStepRef.current = (nextStepRef.current + 1) % steps;
-        }, stepMs);
-    };
+        },
+        [ensureAudio]
+    );
 
-    const stop = () => {
-        setIsPlaying(false);
-        setPlayhead(null);
-        if (timerRef.current) window.clearInterval(timerRef.current);
-        timerRef.current = null;
-        engine.allNotesOff();
-    };
-
-    // If tempo changes during playback, restart clock to apply new step time
     useEffect(() => {
-        if (!isPlaying) return;
-        if (timerRef.current) window.clearInterval(timerRef.current);
-        const stepMs = (60_000 / tempo) / 4;
-        timerRef.current = window.setInterval(() => {
-            const step = nextStepRef.current % steps;
-            setPlayhead(step);
-            const starts = notes.filter((n) => (n.start % steps) === step);
-            const nowTag = Date.now().toString(36);
-            for (const n of starts) {
-                const id = `daw:${n.id}:${nowTag}`;
-                engine.noteOn(n.pitch, 0.9, id);
-                const offDelay = Math.max(1, n.duration) * stepMs;
-                window.setTimeout(() => engine.noteOff(id), offDelay);
-            }
-            nextStepRef.current = (nextStepRef.current + 1) % steps;
-        }, stepMs);
-        return () => {
-            if (timerRef.current) window.clearInterval(timerRef.current);
+        const pressedKeys = pressedKeysRef.current;
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.repeat) return;
+            const key = event.key.toLowerCase();
+            const midi = KEYBOARD_MAP[key];
+            if (midi === undefined) return;
+            event.preventDefault();
+            if (pressedKeys.has(key)) return;
+            pressedKeys.add(key);
+            activateNote(midi);
+            void playNote(midi);
         };
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [tempo]);
+
+        const handleKeyUp = (event: KeyboardEvent) => {
+            const key = event.key.toLowerCase();
+            const midi = KEYBOARD_MAP[key];
+            if (pressedKeys.has(key)) {
+                pressedKeys.delete(key);
+                if (midi !== undefined) {
+                    deactivateNote(midi);
+                }
+            }
+        };
+
+        const handleBlur = () => {
+            pressedKeys.clear();
+            setActiveNotes(new Set());
+        };
+
+        window.addEventListener("keydown", handleKeyDown);
+        window.addEventListener("keyup", handleKeyUp);
+        window.addEventListener("blur", handleBlur);
+        return () => {
+            window.removeEventListener("keydown", handleKeyDown);
+            window.removeEventListener("keyup", handleKeyUp);
+            window.removeEventListener("blur", handleBlur);
+        };
+    }, [activateNote, deactivateNote, playNote]);
 
     return (
-        <main className="p-4 sm:p-6 max-w-6xl mx-auto grid gap-4">
-            <header className="flex items-center justify-between relative z-20">
-                <h1 className="text-xl font-semibold">Open DAW (alpha)</h1>
-                {/* Settings / plugins */}
-                <PluginMenu onOpenSynth={() => router.push("/synth")} />
-            </header>
-
-            {/* Transport */}
-            <div className="flex items-center gap-3 flex-wrap">
-                {!isPlaying ? (
-                    <button onClick={start} className="px-3 py-1.5 rounded border hover:opacity-80">Play</button>
-                ) : (
-                    <button onClick={stop} className="px-3 py-1.5 rounded border hover:opacity-80">Stop</button>
-                )}
-                <div className="flex items-center gap-2">
-                    <label className="text-sm opacity-80">Tempo</label>
-                    <input
-                        type="number"
-                        min={40}
-                        max={240}
-                        value={tempo}
-                        onChange={(e) => setTempo(Math.max(40, Math.min(240, Number(e.target.value) || 120)))}
-                        className="w-20 px-2 py-1 rounded border bg-transparent"
-                    />
-                    <input
-                        type="range"
-                        min={40}
-                        max={240}
-                        value={tempo}
-                        onChange={(e) => setTempo(Number(e.target.value))}
-                    />
-                </div>
-                <div className="flex items-center gap-2">
-                    <label className="text-sm opacity-80">Note len</label>
-                    <select
-                        value={noteLen}
-                        onChange={(e) => setNoteLen(Number(e.target.value))}
-                        className="px-2 py-1 rounded border select-reset">
-                        <option value={1}>1/16</option>
-                        <option value={2}>1/8</option>
-                        <option value={4}>1/4</option>
-                        <option value={8}>1/2</option>
-                        <option value={16}>1 bar</option>
-                    </select>
+        <div className="daw">
+            <div className="daw__board">
+                <div className="daw__keyboard">
+                    <div className="daw__whites">
+                        {WHITE_KEYS.map((key) => (
+                            <button
+                                key={key.label}
+                                type="button"
+                                onPointerDown={() => {
+                                    activateNote(key.midi);
+                                    void playNote(key.midi);
+                                }}
+                                onPointerUp={() => deactivateNote(key.midi)}
+                                onPointerLeave={() => deactivateNote(key.midi)}
+                                className={`daw__white${activeNotes.has(key.midi) ? " daw__white--active" : ""}`}>
+                                {key.label}
+                            </button>
+                        ))}
+                    </div>
+                    {blackKeyLayout.map((key) => (
+                        <button
+                            key={key.label}
+                            type="button"
+                            onPointerDown={() => {
+                                activateNote(key.midi);
+                                void playNote(key.midi);
+                            }}
+                            onPointerUp={() => deactivateNote(key.midi)}
+                            onPointerLeave={() => deactivateNote(key.midi)}
+                            className={`daw__black${activeNotes.has(key.midi) ? " daw__black--active" : ""}`}
+                            style={{ left: key.left, width: key.width }}>
+                            {key.label}
+                        </button>
+                    ))}
                 </div>
             </div>
-
-            {/* Piano Roll */}
-            <PianoRoll
-                steps={steps}
-                startMidi={startMidi}
-                endMidi={endMidi}
-                playheadStep={playhead}
-                notes={notes}
-                onChange={setNotes}
-                defaultLenSteps={noteLen}
-                onAuditionKey={(midi, down) => {
-                    if (down) engine.noteOn(midi, 0.8, `aud:${midi}`);
-                    else engine.noteOff(`aud:${midi}`);
-                }}
-            />
-        </main>
-    );
-}
-
-function PluginMenu({ onOpenSynth }: { onOpenSynth: () => void }) {
-    const [open, setOpen] = useState(false);
-    return (
-        <div className="relative">
-            <button
-                aria-label="Settings"
-                onClick={() => setOpen((v) => !v)}
-                className="p-2 rounded-full border hover:opacity-80"
-                title="Plugins / Settings">
-                <GearIcon className="w-5 h-5 opacity-80" />
-            </button>
-            {open && (
-                <div className="absolute right-0 mt-2 w-60 border rounded-xl bg-background/90 backdrop-blur p-3 grid gap-2 z-50 shadow-xl">
-                    <div className="text-sm opacity-80">Installed Plugins</div>
-                    <button onClick={onOpenSynth} className="text-left px-3 py-2 rounded border hover:opacity-80">
-                        Synth Lab
-                    </button>
-                </div>
-            )}
         </div>
     );
 }
