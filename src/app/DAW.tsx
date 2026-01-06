@@ -99,6 +99,11 @@ export default function DAW() {
 
     const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+    const getGlobalInstrument = useCallback(
+        () => (window as unknown as Record<string, unknown>)[INSTRUMENT_NAME],
+        []
+    );
+
     const loadScript = useCallback((src: string, readyCheck: () => boolean) => {
         if (readyCheck()) return Promise.resolve();
         const cached = scriptPromisesRef.current.get(src);
@@ -138,9 +143,7 @@ export default function DAW() {
     const ensureAudio = useCallback(async () => {
         if (typeof window === "undefined") return null;
         await loadScript(PLAYER_SCRIPT, () => Boolean(window.WebAudioFontPlayer));
-        await loadScript(INSTRUMENT_SCRIPT, () =>
-            Boolean((window as Window & Record<string, unknown>)[INSTRUMENT_NAME])
-        );
+        await loadScript(INSTRUMENT_SCRIPT, () => Boolean(getGlobalInstrument()));
         if (!audioContextRef.current) {
             const AudioContextImpl = window.AudioContext || window.webkitAudioContext;
             if (!AudioContextImpl) return null;
@@ -158,7 +161,7 @@ export default function DAW() {
         }
 
         if (!instrumentRef.current) {
-            const loadedInstrument = (window as Window & Record<string, unknown>)[INSTRUMENT_NAME];
+            const loadedInstrument = getGlobalInstrument();
             if (loadedInstrument) {
                 instrumentRef.current = loadedInstrument;
             }
@@ -166,21 +169,19 @@ export default function DAW() {
 
         const instrumentReady = await waitForInstrumentReady();
         if (!instrumentRef.current && instrumentReady) {
-            const loadedInstrument = (window as Window & Record<string, unknown>)[INSTRUMENT_NAME];
+            const loadedInstrument = getGlobalInstrument();
             if (loadedInstrument) {
                 instrumentRef.current = loadedInstrument;
             }
         }
         if (!playerRef.current || !instrumentRef.current) return null;
         return { ac: audioContextRef.current, player: playerRef.current, instrument: instrumentRef.current };
-    }, [loadScript, waitForInstrumentReady]);
+    }, [getGlobalInstrument, loadScript, waitForInstrumentReady]);
 
     useEffect(() => {
         void loadScript(PLAYER_SCRIPT, () => Boolean(window.WebAudioFontPlayer));
-        void loadScript(INSTRUMENT_SCRIPT, () =>
-            Boolean((window as Window & Record<string, unknown>)[INSTRUMENT_NAME])
-        );
-    }, [loadScript]);
+        void loadScript(INSTRUMENT_SCRIPT, () => Boolean(getGlobalInstrument()));
+    }, [getGlobalInstrument, loadScript]);
 
     const playNote = useCallback(
         async (midi: number) => {
