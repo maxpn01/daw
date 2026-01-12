@@ -1,11 +1,11 @@
 "use client";
 
-import { useWebAudioFont } from "@/lib/audio/webaudiofont";
+import { useAudioEngine } from "@/lib/audio/audioEngine";
 import styles from "./DAW.module.scss";
 import Piano from "../Piano";
 
 export default function DAW() {
-    const { playNote } = useWebAudioFont();
+    const { playNote } = useAudioEngine();
 
     return (
         <div className={styles.daw}>

@@ -2,7 +2,7 @@ import clsx from "clsx";
 import styles from "./Piano.module.scss";
 import { NOTE_NAMES } from "@/lib/audio/consts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { PlayNote } from "@/lib/audio/webaudiofont";
+import type { PlayNote } from "@/lib/audio/audioEngine";
 
 const KEYBOARD_MAP: Record<string, number> = {
     z: 48,
