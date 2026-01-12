@@ -103,6 +103,7 @@ export function useAudioEngine() {
         (midi, options) => engineRef.current?.playNote(midi, options) ?? Promise.resolve(),
         []
     );
+    const resume = useCallback(() => engineRef.current?.resume() ?? Promise.resolve(null), []);
 
     useEffect(() => {
         const engine = engineRef.current;
@@ -111,5 +112,5 @@ export function useAudioEngine() {
         };
     }, []);
 
-    return { playNote };
+    return { playNote, resume };
 }
